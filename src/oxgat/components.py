@@ -57,9 +57,9 @@ class GATLayer(torch.nn.Module):
             The new node feature tensor after applying this module.
         """
         outputs = [head(x, edge_index) for head in self.heads]
-        output = torch.mean(torch.stack(outputs)) \
+        output = torch.mean(torch.stack(outputs), dim=0) \
                  if self.is_final_layer \
-                 else torch.concat(outputs, dim=2)
+                 else torch.concat(outputs, dim=1)
         return output
 
 
@@ -111,7 +111,7 @@ class AttentionHead(torch.nn.Module):
             The new node feature tensor after applying this module.
         """
         x = self.W(x) # Shared linear map
-        attention = self._attention(x, to_dense_adj(edge_index))
+        attention = self._attention(x, torch.squeeze(to_dense_adj(edge_index)))
         attention = F.dropout(attention, p=self.attention_dropout)
         return attention @ x
 
@@ -130,7 +130,9 @@ class AttentionHead(torch.nn.Module):
             adj = torch.matrix_power(adj, self.neighbourhood_depth)
 
         # Calculate attention for each edge
-        e = torch.where(adj > 0, self.a(feature_pairs), torch.zeros(n,n))
+        e = torch.where(adj > 0,
+                        torch.squeeze(self.a(feature_pairs)),
+                        torch.zeros(n,n))
         attention = F.softmax(self.leaky_relu(e), dim=1)
 
         return attention
