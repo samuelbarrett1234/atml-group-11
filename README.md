@@ -1,6 +1,6 @@
 # Exploring Graph Attention Networks
 
-**Kayolan Aleksiev, Samuel Barrett, Damon Falck, Filip Mihov**
+**Kaloyan Aleksiev, Samuel Barrett, Damon Falck, Filip Mihov**
 
 ## Package installation
 
