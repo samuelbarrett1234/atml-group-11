@@ -120,7 +120,7 @@ class AttentionHead(torch.nn.Module):
         n = x.shape[0]
 
         # Get attention mechanism input for each pair of nodes
-        x_repeated = x.repeat(1,1,n).transpose(1,2) # Shape (n,n,F')
+        x_repeated = x.repeat(n,1,1) # Shape (n,n,F')
         feature_pairs = torch.cat([x_repeated,
                                    x_repeated.transpose(0,1)],
                                   dim=2) # Shape (n,n,2F')
