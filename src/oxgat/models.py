@@ -44,16 +44,17 @@ class TransductiveGATModel(pl.LightningModule):
     def training_step(self, data, batch_idx):
         out = self(data)
         loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
+        self.log("test_loss", loss)
         return loss
 
     def validation_step(self, data, batch_idx):
         out = self(data)
+        loss = F.cross_entropy(out[data.val_mask], data.y[data.val_mask])
+        self.log("val_loss", loss)
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
         acc = int(correct) / int(data.test_mask.sum())
-        loss = F.cross_entropy(out[data.val_mask], data.y[data.val_mask])
         self.log("val_acc", acc)
-        self.log("val_loss", loss)
 
     def test_step(self, data, batch_idx):
         out = self(data)
