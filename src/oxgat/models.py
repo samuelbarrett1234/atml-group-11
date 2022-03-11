@@ -82,7 +82,7 @@ class TransductiveGATControl(pl.LightningModule):
         The learning rate for training, defaults to 0.005.
     """
     def __init__(self, in_features: int, num_classes: int, lr: float = 0.005):
-        super(TransductiveGATModel, self).__init__()
+        super(TransductiveGATControl, self).__init__()
         self.lr = lr
         self.gat_layer_1 = GATConv(in_channels=in_features,
                                    out_channels=64,
