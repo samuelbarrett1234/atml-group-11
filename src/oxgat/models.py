@@ -1,9 +1,10 @@
+import pytorch_lightning as pl
 import torch
 import torch.nn.functional as F
 from . import components
 
 
-class TransductiveGATModel(torch.nn.Module):
+class TransductiveGATModel(pl.LightningModule):
     """Implementation of the transductive model defined in the original GAT paper.
 
     Parameters
@@ -33,3 +34,21 @@ class TransductiveGATModel(torch.nn.Module):
         x = self.gat_layer_2(x, edge_index)
         x = F.softmax(x, dim=1)
         return x
+
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(),
+                                     lr=0.01,
+                                     weight_decay=0.0005)
+        return optimizer
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        return loss
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log("test_acc", acc)
