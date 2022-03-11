@@ -37,7 +37,7 @@ class TransductiveGATModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(),
-                                     lr=0.005,
+                                     lr=0.5,
                                      weight_decay=0.0005)
         return optimizer
 
