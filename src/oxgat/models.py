@@ -27,10 +27,10 @@ class TransductiveGATModel(pl.LightningModule):
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
-        x = F.dropout(x, p=0.6)
+        x = F.dropout(x, p=0.6, training=self.training)
         x = self.gat_layer_1(x, edge_index)
         x = F.elu(x)
-        x = F.dropout(x, p=0.6)
+        x = F.dropout(x, p=0.6, training=self.training)
         x = self.gat_layer_2(x, edge_index)
         x = F.softmax(x, dim=1)
         return x

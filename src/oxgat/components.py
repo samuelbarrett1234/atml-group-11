@@ -112,7 +112,9 @@ class AttentionHead(torch.nn.Module):
         """
         x = self.W(x) # Shared linear map
         attention = self._attention(x, torch.squeeze(to_dense_adj(edge_index)))
-        attention = F.dropout(attention, p=self.attention_dropout)
+        attention = F.dropout(attention,
+                              p=self.attention_dropout,
+                              training=self.training)
         return attention @ x
 
     # Calculates the attention matrix for a graph
