@@ -132,7 +132,7 @@ class AttentionHead(torch.nn.Module):
         # Calculate attention for each edge
         e = torch.where(adj > 0,
                         torch.squeeze(self.a(feature_pairs)),
-                        torch.zeros(n,n))
+                        torch.zeros(n,n).type_as(x))
         attention = F.softmax(self.leaky_relu(e), dim=1)
 
         return attention
