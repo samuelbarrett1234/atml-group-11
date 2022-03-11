@@ -51,4 +51,4 @@ class TransductiveGATModel(pl.LightningModule):
         pred = out.argmax(dim=1)
         correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
         acc = int(correct) / int(data.test_mask.sum())
-        self.log("test_acc", acc)
+        self.log("test_acc", acc, batch_size=1)
