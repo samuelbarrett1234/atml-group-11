@@ -93,6 +93,11 @@ class AttentionHead(torch.nn.Module):
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
         self.neighbourhood_depth = neighbourhood_depth
         self.attention_dropout = attention_dropout
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        torch.nn.init.xavier_uniform_(self.W.weight)
+        torch.nn.init.xavier_uniform_(self.a.weight)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
         """Applies this module forwards on an input graph.

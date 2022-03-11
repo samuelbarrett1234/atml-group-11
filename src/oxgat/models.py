@@ -37,14 +37,23 @@ class TransductiveGATModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(),
-                                     lr=0.01,
+                                     lr=0.005,
                                      weight_decay=0.0005)
         return optimizer
 
     def training_step(self, data, batch_idx):
         out = self(data)
-        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
         return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        loss = F.cross_entropy(out[data.val_mask], data.y[data.val_mask])
+        self.log("val_acc", acc)
+        self.log("val_loss", loss)
 
     def test_step(self, data, batch_idx):
         out = self(data)
