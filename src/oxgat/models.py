@@ -13,9 +13,12 @@ class TransductiveGATModel(pl.LightningModule):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
+    lr : float
+        The learning rate for training, defaults to 0.005.
     """
-    def __init__(self, in_features: int, num_classes: int):
+    def __init__(self, in_features: int, num_classes: int, lr: float = 0.005):
         super(TransductiveGATModel, self).__init__()
+        self.lr = lr
         self.gat_layer_1 = components.GATLayer(in_features=in_features,
                                              out_features=8,
                                              num_heads=8,
@@ -37,7 +40,7 @@ class TransductiveGATModel(pl.LightningModule):
 
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(),
-                                     lr=0.5,
+                                     lr=self.lr,
                                      weight_decay=0.0005)
         return optimizer
 
