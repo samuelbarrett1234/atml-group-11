@@ -85,7 +85,7 @@ class TransductiveGATControl(pl.LightningModule):
         super(TransductiveGATControl, self).__init__()
         self.lr = lr
         self.gat_layer_1 = GATConv(in_channels=in_features,
-                                   out_channels=64,
+                                   out_channels=8,
                                    heads=8,
                                    dropout=0.6)
         self.gat_layer_2 = GATConv(in_channels=64,
