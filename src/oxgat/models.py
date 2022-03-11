@@ -32,7 +32,7 @@ class TransductiveGATModel(pl.LightningModule):
         x = F.elu(x)
         x = F.dropout(x, p=0.6, training=self.training)
         x = self.gat_layer_2(x, edge_index)
-        x = F.softmax(x, dim=1)
+        x = F.log_softmax(x, dim=1)
         return x
 
     def configure_optimizers(self):
@@ -43,13 +43,13 @@ class TransductiveGATModel(pl.LightningModule):
 
     def training_step(self, data, batch_idx):
         out = self(data)
-        loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask])
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
         self.log("train_loss", loss)
         return loss
 
     def validation_step(self, data, batch_idx):
         out = self(data)
-        loss = F.cross_entropy(out[data.val_mask], data.y[data.val_mask])
+        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
         self.log("val_loss", loss)
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
