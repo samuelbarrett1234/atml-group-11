@@ -1,4 +1,6 @@
+import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
 
@@ -32,7 +34,7 @@ class GATLayer(torch.nn.Module):
                  num_heads: int = 1,
                  is_final_layer: bool = False,
                  attention_dropout: float = 0):
-        super(GATLayer, self).__init__()
+        super().__init__()
         self.is_final_layer = is_final_layer
         self.heads = torch.nn.ModuleList([AttentionHead(in_features,
                                                         out_features,
@@ -59,7 +61,7 @@ class GATLayer(torch.nn.Module):
         outputs = [head(x, edge_index) for head in self.heads]
         output = torch.mean(torch.stack(outputs), dim=0) \
                  if self.is_final_layer \
-                 else torch.concat(outputs, dim=1)
+                 else torch.cat(outputs, dim=1)
         return output
 
 
@@ -87,17 +89,22 @@ class AttentionHead(torch.nn.Module):
                  leaky_relu_slope: bool = 0.2,
                  attention_dropout: float = 0,
                  neighbourhood_depth: int = 1):
-        super(AttentionHead, self).__init__()
+        super().__init__()
+
         self.W = torch.nn.Linear(in_features, out_features, bias=False)
-        self.a = torch.nn.Linear(out_features*2, 1, bias=False)
+        self.a1 = torch.nn.Linear(out_features, 1, bias=False)
+        self.a2 = torch.nn.Linear(out_features, 1, bias=False)
+
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
         self.neighbourhood_depth = neighbourhood_depth
         self.attention_dropout = attention_dropout
+
         self.reset_parameters()
         
     def reset_parameters(self):
-        torch.nn.init.xavier_uniform_(self.W.weight)
-        torch.nn.init.xavier_uniform_(self.a.weight)
+        torch.nn.init.xavier_uniform_(self.W.weight, gain=np.sqrt(2))
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=np.sqrt(2))
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=np.sqrt(2))
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
         """Applies this module forwards on an input graph.
@@ -115,31 +122,20 @@ class AttentionHead(torch.nn.Module):
         torch.Tensor
             The new node feature tensor after applying this module.
         """
-        x = self.W(x) # Shared linear map
-        attention = self._attention(x, torch.squeeze(to_dense_adj(edge_index)))
-        attention = F.dropout(attention,
+        x = self.W(x)
+        attention = F.dropout(self._attention(x, edge_index),
                               p=self.attention_dropout,
                               training=self.training)
         return attention @ x
 
     # Calculates the attention matrix for a graph
-    def _attention(self, x, adj):
+    def _attention(self, x, edge_index):
         n = x.shape[0]
 
-        # Get attention mechanism input for each pair of nodes
-        x_repeated = x.repeat(n,1,1) # Shape (n,n,F')
-        feature_pairs = torch.cat([x_repeated,
-                                   x_repeated.transpose(0,1)],
-                                  dim=2) # Shape (n,n,2F')
+        # Calculate higher-order adjacency matrix
+        adj = torch.matrix_power(torch.squeeze(to_dense_adj(edge_index)),
+                                 self.neighbourhood_depth)
 
-        # Calculate higher-order adjacency matrix if necessary
-        if self.neighbourhood_depth > 1:
-            adj = torch.matrix_power(adj, self.neighbourhood_depth)
-
-        # Calculate attention for each edge
-        e = torch.where(adj > 0,
-                        torch.squeeze(self.a(feature_pairs)),
-                        torch.zeros(n,n).type_as(x))
-        attention = F.softmax(self.leaky_relu(e), dim=1)
-
-        return attention
+        zero = -9e15 * torch.ones(n,n).type_as(x)
+        e = torch.where(adj > 0, self.a1(x) + self.a2(x).T, zero)
+        return F.softmax(self.leaky_relu(e), dim=1)
