@@ -128,6 +128,14 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+
 # ATML GROUP 11 PROJECT SPECIFIC
 *localtests*
 data
+
+.DS_Store
+
+.vscode/
+
+damon/notebooks/data/
+damon/notebooks/lightning_logs/
