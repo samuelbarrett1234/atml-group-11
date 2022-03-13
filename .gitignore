@@ -133,3 +133,7 @@ dmypy.json
 
 # VSCode
 .vscode/
+
+# Custom
+damon/notebooks/data/
+damon/notebooks/lightning_logs/
