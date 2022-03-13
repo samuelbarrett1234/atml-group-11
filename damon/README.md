@@ -15,7 +15,7 @@ My results are as follows:
 - **Cora (*transductive*):** 86% accuracy in ~600 epochs;
 - **CiteSeer (*transductive*):** 75% accuracy in ~300 epochs;
 - **PubMed (*transductive*):** [] accuracy in ~[] epochs;
-- **PPI (*inductive*):** [] micro-F1 score in ~[] epochs.
+- **PPI (*inductive*):** 0.96 micro-F1 score in ~600 epochs.
 
 ## Directory structure
 
