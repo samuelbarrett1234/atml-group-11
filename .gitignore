@@ -127,3 +127,13 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# MacOS
+.DS_Store
+
+# VSCode
+.vscode/
+
+# Custom
+damon/notebooks/data/
+damon/notebooks/lightning_logs/
