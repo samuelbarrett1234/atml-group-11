@@ -169,7 +169,7 @@ class AttentionHead(torch.nn.Module):
         n = x.shape[0]
         adj = torch.squeeze(to_dense_adj(edge_index, max_num_nodes=n))
         if not self.strict_neighbourhoods: # Add self-loops
-            adj += torch.diag(torch.ones(n, dtype=torch.long))
+            adj += torch.diag(torch.ones(n, dtype=torch.long)).type_as(x)
         if self.neighbourhood_depth > 1:
             # Calculate higher-order adjacency matrix
             adj = torch.matrix_power(adj, self.neighbourhood_depth)
@@ -182,7 +182,7 @@ class AttentionHead(torch.nn.Module):
     def _sparse_attention(self, x, edge_index):
         n = x.shape[0]
         if not self.strict_neighbourhoods: # Add self-loops
-            self_loops = torch.arange(n, dtype=torch.long).expand(2,n)
+            self_loops = torch.arange(n, dtype=torch.long).expand(2,n).type_as(x)
             edge_index = torch.cat([edge_index, self_loops], dim=1)
         attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
                                             self.a2(x[edge_index[1,:],:]))
