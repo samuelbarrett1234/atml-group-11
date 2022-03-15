@@ -1,0 +1,801 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, minimum-scale=1" />
+<meta name="generator" content="pdoc 0.9.2" />
+<title>oxgat.models API documentation</title>
+<meta name="description" content="Defines various model architectures, all of which provide built-in training
+(implementing an `AbstractModel` interface which extends the standard
+…" />
+<link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/sanitize.min.css" integrity="sha256-PK9q560IAAa6WVRRh76LtCaI8pjTJ2z11v0miyNNjrs=" crossorigin>
+<link rel="preload stylesheet" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/10up-sanitize.css/11.0.1/typography.min.css" integrity="sha256-7l/o7C8jubJiy74VsKTidCy1yBkRtiUGbVkYBylBqUg=" crossorigin>
+<link rel="stylesheet preload" as="style" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.1.1/styles/github.min.css" crossorigin>
+<style>:root{--highlight-color:#fe9}.flex{display:flex !important}body{line-height:1.5em}#content{padding:20px}#sidebar{padding:30px;overflow:hidden}#sidebar > *:last-child{margin-bottom:2cm}.http-server-breadcrumbs{font-size:130%;margin:0 0 15px 0}#footer{font-size:.75em;padding:5px 30px;border-top:1px solid #ddd;text-align:right}#footer p{margin:0 0 0 1em;display:inline-block}#footer p:last-child{margin-right:30px}h1,h2,h3,h4,h5{font-weight:300}h1{font-size:2.5em;line-height:1.1em}h2{font-size:1.75em;margin:1em 0 .50em 0}h3{font-size:1.4em;margin:25px 0 10px 0}h4{margin:0;font-size:105%}h1:target,h2:target,h3:target,h4:target,h5:target,h6:target{background:var(--highlight-color);padding:.2em 0}a{color:#058;text-decoration:none;transition:color .3s ease-in-out}a:hover{color:#e82}.title code{font-weight:bold}h2[id^="header-"]{margin-top:2em}.ident{color:#900}pre code{background:#f8f8f8;font-size:.8em;line-height:1.4em}code{background:#f2f2f1;padding:1px 4px;overflow-wrap:break-word}h1 code{background:transparent}pre{background:#f8f8f8;border:0;border-top:1px solid #ccc;border-bottom:1px solid #ccc;margin:1em 0;padding:1ex}#http-server-module-list{display:flex;flex-flow:column}#http-server-module-list div{display:flex}#http-server-module-list dt{min-width:10%}#http-server-module-list p{margin-top:0}.toc ul,#index{list-style-type:none;margin:0;padding:0}#index code{background:transparent}#index h3{border-bottom:1px solid #ddd}#index ul{padding:0}#index h4{margin-top:.6em;font-weight:bold}@media (min-width:200ex){#index .two-column{column-count:2}}@media (min-width:300ex){#index .two-column{column-count:3}}dl{margin-bottom:2em}dl dl:last-child{margin-bottom:4em}dd{margin:0 0 1em 3em}#header-classes + dl > dd{margin-bottom:3em}dd dd{margin-left:2em}dd p{margin:10px 0}.name{background:#eee;font-weight:bold;font-size:.85em;padding:5px 10px;display:inline-block;min-width:40%}.name:hover{background:#e0e0e0}dt:target .name{background:var(--highlight-color)}.name > span:first-child{white-space:nowrap}.name.class > span:nth-child(2){margin-left:.4em}.inherited{color:#999;border-left:5px solid #eee;padding-left:1em}.inheritance em{font-style:normal;font-weight:bold}.desc h2{font-weight:400;font-size:1.25em}.desc h3{font-size:1em}.desc dt code{background:inherit}.source summary,.git-link-div{color:#666;text-align:right;font-weight:400;font-size:.8em;text-transform:uppercase}.source summary > *{white-space:nowrap;cursor:pointer}.git-link{color:inherit;margin-left:1em}.source pre{max-height:500px;overflow:auto;margin:0}.source pre code{font-size:12px;overflow:visible}.hlist{list-style:none}.hlist li{display:inline}.hlist li:after{content:',\2002'}.hlist li:last-child:after{content:none}.hlist .hlist{display:inline;padding-left:1em}img{max-width:100%}td{padding:0 .5em}.admonition{padding:.1em .5em;margin-bottom:1em}.admonition-title{font-weight:bold}.admonition.note,.admonition.info,.admonition.important{background:#aef}.admonition.todo,.admonition.versionadded,.admonition.tip,.admonition.hint{background:#dfd}.admonition.warning,.admonition.versionchanged,.admonition.deprecated{background:#fd4}.admonition.error,.admonition.danger,.admonition.caution{background:lightpink}</style>
+<style media="screen and (min-width: 700px)">@media screen and (min-width:700px){#sidebar{width:30%;height:100vh;overflow:auto;position:sticky;top:0}#content{width:70%;max-width:100ch;padding:3em 4em;border-left:1px solid #ddd}pre code{font-size:1em}.item .name{font-size:1em}main{display:flex;flex-direction:row-reverse;justify-content:flex-end}.toc ul ul,#index ul{padding-left:1.5em}.toc > ul > li{margin-top:.5em}}</style>
+<style media="print">@media print{#sidebar h1{page-break-before:always}.source{display:none}}@media print{*{background:transparent !important;color:#000 !important;box-shadow:none !important;text-shadow:none !important}a[href]:after{content:" (" attr(href) ")";font-size:90%}a[href][title]:after{content:none}abbr[title]:after{content:" (" attr(title) ")"}.ir a:after,a[href^="javascript:"]:after,a[href^="#"]:after{content:""}pre,blockquote{border:1px solid #999;page-break-inside:avoid}thead{display:table-header-group}tr,img{page-break-inside:avoid}img{max-width:100% !important}@page{margin:0.5cm}p,h2,h3{orphans:3;widows:3}h1,h2,h3,h4,h5,h6{page-break-after:avoid}}</style>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/10.1.1/highlight.min.js" integrity="sha256-Uv3H6lx7dJmRfRvH8TH6kJD1TSK1aFcwgx+mdg3epi8=" crossorigin></script>
+<script>window.addEventListener('DOMContentLoaded', () => hljs.initHighlighting())</script>
+</head>
+<body>
+<main>
+<article id="content">
+<header>
+<h1 class="title">Module <code>oxgat.models</code></h1>
+</header>
+<section id="section-intro">
+<p>Defines various model architectures, all of which provide built-in training
+(implementing an <code><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></code> interface which extends the standard
+PyTorch Lightning module).</p>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">&#34;&#34;&#34;Defines various model architectures, all of which provide built-in training
+(implementing an `AbstractModel` interface which extends the standard
+PyTorch Lightning module).
+&#34;&#34;&#34;
+from abc import ABC, abstractmethod
+
+import pytorch_lightning as pl
+from sklearn.metrics import f1_score
+import torch
+import torch.nn.functional as F
+import torch_geometric.loader
+
+from . import components, utils
+
+
+class AbstractModel(pl.LightningModule, ABC):
+    &#34;&#34;&#34;Abstract interface for models defined in this package.
+    
+    All models are subclasses of `pl.LightningModule` so can be trained using the
+    standard PyTorch Lightning framework, but models here also provide methods to
+    automate the training and testing in some standard way.
+    &#34;&#34;&#34;
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, data):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+    
+    @abstractmethod
+    def configure_optimizers(self):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def training_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def validation_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def test_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def standard_train(self, dataset, use_gpu=False):
+        &#34;&#34;&#34;Automated training interface.
+        
+        Parameters
+        ----------
+        dataset : torch_geometric.data.Dataset
+            Dataset to train on.
+        use_gpu : bool, optional
+            Whether to use (single) GPU or not. Defaults to False.
+        &#34;&#34;&#34;
+
+    @abstractmethod
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Automated testing interface for after having run `self.standard_train()`.
+        
+        Parameters
+        ----------
+        dataset : torch_geometric.data.Dataset
+            Dataset to test on.
+        &#34;&#34;&#34;
+
+
+class _BaseGATModel(AbstractModel):
+    &#34;&#34;&#34;Semi-abstract base class for inductive and transductive models defined in
+    the original GAT paper.
+    
+    See superclass and subclasses for documentation; this
+    class is for internal use only to minimise code duplication.
+    &#34;&#34;&#34;
+    def __init__(self, lr, regularisation=0, train_batch_size=1):
+        super().__init__()
+        self.lr = lr
+        self.regularisation = regularisation
+        self.train_batch_size = train_batch_size
+        self.trainer = None
+
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                     lr=self.lr,
+                                     weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset=None, use_gpu=False):
+        &#34;&#34;&#34;Automated training of this model exactly as was done in
+        the original paper.
+        &#34;&#34;&#34;
+        self._init_trainer(use_gpu)
+        if val_dataset is None:
+            val_dataset = train_dataset
+        train_loader = torch_geometric.loader.DataLoader(train_dataset,
+                                                         batch_size=self.train_batch_size,
+                                                         shuffle=True)
+        val_loader = torch_geometric.loader.DataLoader(val_dataset)
+        self.trainer.fit(self, train_dataloaders=train_loader, val_dataloaders=val_loader)
+
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+        &#34;&#34;&#34;
+        assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+        dataloader = torch_geometric.loader.DataLoader(dataset)
+        self.trainer.test(self, dataloader)
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
+            modes=[&#34;max&#34;,&#34;min&#34;],
+            patience=100,
+            verbose=False
+        )
+        trainer_args = {&#34;max_epochs&#34;: 100000,
+                        &#34;log_every_n_steps&#34;: 1,
+                        &#34;callbacks&#34;: [early_stopping]}
+        if use_gpu:
+            trainer_args[&#34;gpus&#34;] = 1
+        self.trainer = pl.Trainer(**trainer_args)
+
+
+class TransductiveGATModel(_BaseGATModel):
+    &#34;&#34;&#34;Implementation of the transductive model defined in the original GAT paper.
+
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    pubmed : bool, optional
+        Whether to apply the architecture changes made for the PubMed dataset
+        in the original paper. Defaults to False.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Defaults to `True`.
+    &#34;&#34;&#34;
+    def __init__(self, in_features: int, num_classes: int,
+                 pubmed: bool = False, sparse: bool = True):
+        super().__init__(lr=0.01 if pubmed else 0.005,
+                         regularisation=0.001 if pubmed else 0.0005)
+        self.gat_layer_1 = components.GATLayer(in_features=in_features,
+                                               out_features=8,
+                                               num_heads=8,
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
+        self.gat_layer_2 = components.GATLayer(in_features=64,
+                                               out_features=num_classes,
+                                               num_heads=8 if pubmed else 1,
+                                               is_final_layer=True,
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.gat_layer_1(x, edge_index)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.gat_layer_2(x, edge_index)
+        return F.log_softmax(x, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        self.log(&#34;train_loss&#34;, loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
+        self.log(&#34;val_loss&#34;, loss)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log(&#34;val_acc&#34;, acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log(&#34;test_acc&#34;, acc)
+
+
+class InductiveGATModel(_BaseGATModel):
+    &#34;&#34;&#34;Implementation of the inductive model defined in the original GAT paper.
+
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Defaults to `True`.
+    &#34;&#34;&#34;
+    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
+        super().__init__(lr=0.005, train_batch_size=2)
+        self.gat_layer_1 = components.GATLayer(in_features=in_features,
+                                               out_features=256,
+                                               num_heads=4,
+                                               sparse=sparse)
+        self.gat_layer_2 = components.GATLayer(in_features=1024,
+                                               out_features=256,
+                                               num_heads=4,
+                                               sparse=sparse)
+        self.gat_layer_3 = components.GATLayer(in_features=1024,
+                                               out_features=num_classes,
+                                               num_heads=6,
+                                               is_final_layer=True,
+                                               sparse=sparse)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = self.gat_layer_1(x, edge_index)
+        x = F.elu(x)
+        x1 = self.gat_layer_2(x, edge_index)
+        x = F.elu(x1) + x # Skip connection
+        x = self.gat_layer_3(x, edge_index)
+        return torch.sigmoid(x)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.binary_cross_entropy(out, data.y)
+        self.log(&#34;train_loss&#34;, loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.binary_cross_entropy(out, data.y)
+        self.log(&#34;val_loss&#34;, loss)
+        pred = torch.round(out)
+        acc = f1_score(data.y.cpu(), pred.cpu(), average=&#34;micro&#34;)
+        self.log(&#34;val_acc&#34;, acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = torch.round(out)
+        acc = f1_score(data.y.cpu(), pred.cpu(), average=&#34;micro&#34;)
+        self.log(&#34;test_acc&#34;, acc)</code></pre>
+</details>
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+</section>
+<section>
+<h2 class="section-title" id="header-classes">Classes</h2>
+<dl>
+<dt id="oxgat.models.AbstractModel"><code class="flex name class">
+<span>class <span class="ident">AbstractModel</span></span>
+</code></dt>
+<dd>
+<div class="desc"><p>Abstract interface for models defined in this package.</p>
+<p>All models are subclasses of <code>pl.LightningModule</code> so can be trained using the
+standard PyTorch Lightning framework, but models here also provide methods to
+automate the training and testing in some standard way.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class AbstractModel(pl.LightningModule, ABC):
+    &#34;&#34;&#34;Abstract interface for models defined in this package.
+    
+    All models are subclasses of `pl.LightningModule` so can be trained using the
+    standard PyTorch Lightning framework, but models here also provide methods to
+    automate the training and testing in some standard way.
+    &#34;&#34;&#34;
+    def __init__(self):
+        super().__init__()
+
+    @abstractmethod
+    def forward(self, data):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+    
+    @abstractmethod
+    def configure_optimizers(self):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def training_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def validation_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def test_step(self, data, batch_idx):
+        &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;
+
+    @abstractmethod
+    def standard_train(self, dataset, use_gpu=False):
+        &#34;&#34;&#34;Automated training interface.
+        
+        Parameters
+        ----------
+        dataset : torch_geometric.data.Dataset
+            Dataset to train on.
+        use_gpu : bool, optional
+            Whether to use (single) GPU or not. Defaults to False.
+        &#34;&#34;&#34;
+
+    @abstractmethod
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Automated testing interface for after having run `self.standard_train()`.
+        
+        Parameters
+        ----------
+        dataset : torch_geometric.data.Dataset
+            Dataset to test on.
+        &#34;&#34;&#34;</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>pytorch_lightning.core.lightning.LightningModule</li>
+<li>pytorch_lightning.core.mixins.device_dtype_mixin.DeviceDtypeModuleMixin</li>
+<li>pytorch_lightning.core.mixins.hparams_mixin.HyperparametersMixin</li>
+<li>pytorch_lightning.core.saving.ModelIO</li>
+<li>pytorch_lightning.core.hooks.ModelHooks</li>
+<li>pytorch_lightning.core.hooks.DataHooks</li>
+<li>pytorch_lightning.core.hooks.CheckpointHooks</li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li>oxgat.models._BaseGATModel</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.models.AbstractModel.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.models.AbstractModel.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="oxgat.models.AbstractModel.configure_optimizers"><code class="name flex">
+<span>def <span class="ident">configure_optimizers</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>As required by PyTorch Lightning.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def configure_optimizers(self):
+    &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.forward"><code class="name flex">
+<span>def <span class="ident">forward</span></span>(<span>self, data) ‑> Callable[..., Any]</span>
+</code></dt>
+<dd>
+<div class="desc"><p>As required by PyTorch Lightning.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def forward(self, data):
+    &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.standard_test"><code class="name flex">
+<span>def <span class="ident">standard_test</span></span>(<span>self, dataset)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Automated testing interface for after having run <code>self.standard_train()</code>.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>dataset</code></strong> :&ensp;<code>torch_geometric.data.Dataset</code></dt>
+<dd>Dataset to test on.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def standard_test(self, dataset):
+    &#34;&#34;&#34;Automated testing interface for after having run `self.standard_train()`.
+    
+    Parameters
+    ----------
+    dataset : torch_geometric.data.Dataset
+        Dataset to test on.
+    &#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.standard_train"><code class="name flex">
+<span>def <span class="ident">standard_train</span></span>(<span>self, dataset, use_gpu=False)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Automated training interface.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>dataset</code></strong> :&ensp;<code>torch_geometric.data.Dataset</code></dt>
+<dd>Dataset to train on.</dd>
+<dt><strong><code>use_gpu</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to use (single) GPU or not. Defaults to False.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def standard_train(self, dataset, use_gpu=False):
+    &#34;&#34;&#34;Automated training interface.
+    
+    Parameters
+    ----------
+    dataset : torch_geometric.data.Dataset
+        Dataset to train on.
+    use_gpu : bool, optional
+        Whether to use (single) GPU or not. Defaults to False.
+    &#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.test_step"><code class="name flex">
+<span>def <span class="ident">test_step</span></span>(<span>self, data, batch_idx)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>As required by PyTorch Lightning.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def test_step(self, data, batch_idx):
+    &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.training_step"><code class="name flex">
+<span>def <span class="ident">training_step</span></span>(<span>self, data, batch_idx)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>As required by PyTorch Lightning.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def training_step(self, data, batch_idx):
+    &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.AbstractModel.validation_step"><code class="name flex">
+<span>def <span class="ident">validation_step</span></span>(<span>self, data, batch_idx)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>As required by PyTorch Lightning.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def validation_step(self, data, batch_idx):
+    &#34;&#34;&#34;As required by PyTorch Lightning.&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+</dl>
+</dd>
+<dt id="oxgat.models.InductiveGATModel"><code class="flex name class">
+<span>class <span class="ident">InductiveGATModel</span></span>
+<span>(</span><span>in_features: int, num_classes: int, sparse: bool = True)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Implementation of the inductive model defined in the original GAT paper.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of features per node in the input data.</dd>
+<dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of classes for node classification.</dd>
+<dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to use sparse matrix operations. Defaults to <code>True</code>.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class InductiveGATModel(_BaseGATModel):
+    &#34;&#34;&#34;Implementation of the inductive model defined in the original GAT paper.
+
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Defaults to `True`.
+    &#34;&#34;&#34;
+    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
+        super().__init__(lr=0.005, train_batch_size=2)
+        self.gat_layer_1 = components.GATLayer(in_features=in_features,
+                                               out_features=256,
+                                               num_heads=4,
+                                               sparse=sparse)
+        self.gat_layer_2 = components.GATLayer(in_features=1024,
+                                               out_features=256,
+                                               num_heads=4,
+                                               sparse=sparse)
+        self.gat_layer_3 = components.GATLayer(in_features=1024,
+                                               out_features=num_classes,
+                                               num_heads=6,
+                                               is_final_layer=True,
+                                               sparse=sparse)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = self.gat_layer_1(x, edge_index)
+        x = F.elu(x)
+        x1 = self.gat_layer_2(x, edge_index)
+        x = F.elu(x1) + x # Skip connection
+        x = self.gat_layer_3(x, edge_index)
+        return torch.sigmoid(x)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.binary_cross_entropy(out, data.y)
+        self.log(&#34;train_loss&#34;, loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.binary_cross_entropy(out, data.y)
+        self.log(&#34;val_loss&#34;, loss)
+        pred = torch.round(out)
+        acc = f1_score(data.y.cpu(), pred.cpu(), average=&#34;micro&#34;)
+        self.log(&#34;val_acc&#34;, acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = torch.round(out)
+        acc = f1_score(data.y.cpu(), pred.cpu(), average=&#34;micro&#34;)
+        self.log(&#34;test_acc&#34;, acc)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>oxgat.models._BaseGATModel</li>
+<li><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></li>
+<li>pytorch_lightning.core.lightning.LightningModule</li>
+<li>pytorch_lightning.core.mixins.device_dtype_mixin.DeviceDtypeModuleMixin</li>
+<li>pytorch_lightning.core.mixins.hparams_mixin.HyperparametersMixin</li>
+<li>pytorch_lightning.core.saving.ModelIO</li>
+<li>pytorch_lightning.core.hooks.ModelHooks</li>
+<li>pytorch_lightning.core.hooks.DataHooks</li>
+<li>pytorch_lightning.core.hooks.CheckpointHooks</li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.models.InductiveGATModel.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.models.InductiveGATModel.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.models.AbstractModel.configure_optimizers" href="#oxgat.models.AbstractModel.configure_optimizers">configure_optimizers</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.forward" href="#oxgat.models.AbstractModel.forward">forward</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_test" href="#oxgat.models.AbstractModel.standard_test">standard_test</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_train" href="#oxgat.models.AbstractModel.standard_train">standard_train</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.test_step" href="#oxgat.models.AbstractModel.test_step">test_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="oxgat.models.TransductiveGATModel"><code class="flex name class">
+<span>class <span class="ident">TransductiveGATModel</span></span>
+<span>(</span><span>in_features: int, num_classes: int, pubmed: bool = False, sparse: bool = True)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Implementation of the transductive model defined in the original GAT paper.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of features per node in the input data.</dd>
+<dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of classes for node classification.</dd>
+<dt><strong><code>pubmed</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to apply the architecture changes made for the PubMed dataset
+in the original paper. Defaults to False.</dd>
+<dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to use sparse matrix operations. Defaults to <code>True</code>.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class TransductiveGATModel(_BaseGATModel):
+    &#34;&#34;&#34;Implementation of the transductive model defined in the original GAT paper.
+
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    pubmed : bool, optional
+        Whether to apply the architecture changes made for the PubMed dataset
+        in the original paper. Defaults to False.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Defaults to `True`.
+    &#34;&#34;&#34;
+    def __init__(self, in_features: int, num_classes: int,
+                 pubmed: bool = False, sparse: bool = True):
+        super().__init__(lr=0.01 if pubmed else 0.005,
+                         regularisation=0.001 if pubmed else 0.0005)
+        self.gat_layer_1 = components.GATLayer(in_features=in_features,
+                                               out_features=8,
+                                               num_heads=8,
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
+        self.gat_layer_2 = components.GATLayer(in_features=64,
+                                               out_features=num_classes,
+                                               num_heads=8 if pubmed else 1,
+                                               is_final_layer=True,
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.gat_layer_1(x, edge_index)
+        x = F.elu(x)
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.gat_layer_2(x, edge_index)
+        return F.log_softmax(x, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        self.log(&#34;train_loss&#34;, loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
+        self.log(&#34;val_loss&#34;, loss)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log(&#34;val_acc&#34;, acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log(&#34;test_acc&#34;, acc)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>oxgat.models._BaseGATModel</li>
+<li><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></li>
+<li>pytorch_lightning.core.lightning.LightningModule</li>
+<li>pytorch_lightning.core.mixins.device_dtype_mixin.DeviceDtypeModuleMixin</li>
+<li>pytorch_lightning.core.mixins.hparams_mixin.HyperparametersMixin</li>
+<li>pytorch_lightning.core.saving.ModelIO</li>
+<li>pytorch_lightning.core.hooks.ModelHooks</li>
+<li>pytorch_lightning.core.hooks.DataHooks</li>
+<li>pytorch_lightning.core.hooks.CheckpointHooks</li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.models.TransductiveGATModel.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.models.TransductiveGATModel.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.models.AbstractModel.configure_optimizers" href="#oxgat.models.AbstractModel.configure_optimizers">configure_optimizers</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.forward" href="#oxgat.models.AbstractModel.forward">forward</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_test" href="#oxgat.models.AbstractModel.standard_test">standard_test</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_train" href="#oxgat.models.AbstractModel.standard_train">standard_train</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.test_step" href="#oxgat.models.AbstractModel.test_step">test_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+</dl>
+</section>
+</article>
+<nav id="sidebar">
+<h1>Index</h1>
+<div class="toc">
+<ul></ul>
+</div>
+<ul id="index">
+<li><h3>Super-module</h3>
+<ul>
+<li><code><a title="oxgat" href="index.html">oxgat</a></code></li>
+</ul>
+</li>
+<li><h3><a href="#header-classes">Classes</a></h3>
+<ul>
+<li>
+<h4><code><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.models.AbstractModel.configure_optimizers" href="#oxgat.models.AbstractModel.configure_optimizers">configure_optimizers</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.dump_patches" href="#oxgat.models.AbstractModel.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.forward" href="#oxgat.models.AbstractModel.forward">forward</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_test" href="#oxgat.models.AbstractModel.standard_test">standard_test</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.standard_train" href="#oxgat.models.AbstractModel.standard_train">standard_train</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.test_step" href="#oxgat.models.AbstractModel.test_step">test_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training" href="#oxgat.models.AbstractModel.training">training</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.models.InductiveGATModel" href="#oxgat.models.InductiveGATModel">InductiveGATModel</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.models.InductiveGATModel.dump_patches" href="#oxgat.models.InductiveGATModel.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.models.InductiveGATModel.training" href="#oxgat.models.InductiveGATModel.training">training</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.models.TransductiveGATModel" href="#oxgat.models.TransductiveGATModel">TransductiveGATModel</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.models.TransductiveGATModel.dump_patches" href="#oxgat.models.TransductiveGATModel.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.models.TransductiveGATModel.training" href="#oxgat.models.TransductiveGATModel.training">training</a></code></li>
+</ul>
+</li>
+</ul>
+</li>
+</ul>
+</nav>
+</main>
+<footer id="footer">
+<p>Generated by <a href="https://pdoc3.github.io/pdoc"><cite>pdoc</cite> 0.9.2</a>.</p>
+</footer>
+</body>
+</html>

@@ -1,11 +1,14 @@
+"""Defines various model architectures, all of which provide built-in training
+(implementing an `AbstractModel` interface which extends the standard
+PyTorch Lightning module).
+"""
 from abc import ABC, abstractmethod
 
 import pytorch_lightning as pl
-from pytorch_lightning.callbacks.early_stopping import EarlyStopping
+from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 import torch_geometric.loader
-from sklearn.metrics import f1_score
 
 from . import components, utils
 
@@ -63,9 +66,12 @@ class AbstractModel(pl.LightningModule, ABC):
         """
 
 
-class BaseGATModel(AbstractModel):
+class _BaseGATModel(AbstractModel):
     """Semi-abstract base class for inductive and transductive models defined in
-    the original GAT paper. See superclass and subclasses for documentation.
+    the original GAT paper.
+    
+    See superclass and subclasses for documentation; this
+    class is for internal use only to minimise code duplication.
     """
     def __init__(self, lr, regularisation=0, train_batch_size=1):
         super().__init__()
@@ -117,7 +123,7 @@ class BaseGATModel(AbstractModel):
         self.trainer = pl.Trainer(**trainer_args)
 
 
-class TransductiveGATModel(BaseGATModel):
+class TransductiveGATModel(_BaseGATModel):
     """Implementation of the transductive model defined in the original GAT paper.
 
     Parameters
@@ -130,8 +136,7 @@ class TransductiveGATModel(BaseGATModel):
         Whether to apply the architecture changes made for the PubMed dataset
         in the original paper. Defaults to False.
     sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth > 1`. Defaults to `True`.
+        Whether to use sparse matrix operations. Defaults to `True`.
     """
     def __init__(self, in_features: int, num_classes: int,
                  pubmed: bool = False, sparse: bool = True):
@@ -181,7 +186,7 @@ class TransductiveGATModel(BaseGATModel):
         self.log("test_acc", acc)
 
 
-class InductiveGATModel(BaseGATModel):
+class InductiveGATModel(_BaseGATModel):
     """Implementation of the inductive model defined in the original GAT paper.
 
     Parameters
@@ -191,8 +196,7 @@ class InductiveGATModel(BaseGATModel):
     num_classes : int
         The number of classes for node classification.
     sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth > 1`. Defaults to `True`.
+        Whether to use sparse matrix operations. Defaults to `True`.
     """
     def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
         super().__init__(lr=0.005, train_batch_size=2)

@@ -1,12 +1,14 @@
+"""Provides utility functions and classes for use by the rest of the package.
+"""
 from typing import Any, Callable, Dict, Optional, Tuple, List
 
 import numpy as np
-import torch
-import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.base import Callback
-from pytorch_lightning.utilities import rank_zero_deprecation, rank_zero_warn
+from pytorch_lightning.utilities import rank_zero_warn
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
+import torch
+import torch.nn.functional as F
 
 
 class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):

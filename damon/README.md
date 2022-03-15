@@ -27,7 +27,7 @@ The models and training are implemented in a Python package contained in `src/ox
 - the `models` module defines trainable models according to the original paper;
 - the `utils` module defines additional utilities.
 
-Example notebooks are provided in the `notebooks` directory.
+Example usage is shown in the `notebooks/examples.ipynb`.
 
 ## Package installation
 
@@ -37,11 +37,15 @@ pip install -e damon/src
 ```
 in the repository root; all dependencies will be automatically added.
 
+## Package documentation
+
+Formal documentation is compiled periodically and available in the `docs` directory.
+
 ## Further comments
 
 My implementations are based on PyTorch Lightning, appropriately abstracting away details of the training process; a class heirarchy is defined in `models` which provides automated training interfaces for each model.
 
 ## To do
 
-- Implement GatV2
+- Implement GATv2
 - Extend in various other directions

@@ -1,7 +1,11 @@
+"""Provides individual model components (layers, attention heads) for use
+in various model architectures.
+"""
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
+
 from . import utils
 
 
@@ -26,6 +30,9 @@ class GATLayer(torch.nn.Module):
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
+    neighbourhood_depth : int, optional
+        Calculate attention only between nodes up to this many edges apart.
+        Defaults to 1.
     strict_neighbourhoods : bool, optional
         If `True`, only allow a node to pay attention to other nodes connected by
         a path of length *exactly* `neighbourhood_depth`; if `False` allow
@@ -43,6 +50,7 @@ class GATLayer(torch.nn.Module):
                  num_heads: int = 1,
                  is_final_layer: bool = False,
                  attention_dropout: float = 0,
+                 neighbourhood_depth: int = 1,
                  strict_neighbourhoods: bool = False,
                  sparse: bool = True):
         super().__init__()
@@ -51,7 +59,8 @@ class GATLayer(torch.nn.Module):
                                                         out_features,
                                                         leaky_relu_slope,
                                                         attention_dropout,
-                                                        strict_neighbourhoods=strict_neighbourhoods,
+                                                        neighbourhood_depth,
+                                                        strict_neighbourhoods,
                                                         sparse=sparse)
                                           for _ in range(num_heads)])
 
@@ -158,7 +167,7 @@ class AttentionHead(torch.nn.Module):
                                                     training=self.training)
             return torch.sparse.mm(sparse_attention, x)
         else:
-            attention = self._sparse_attention(x, edge_index)
+            attention = self._attention(x, edge_index)
             attention = F.dropout(attention,
                                   p=self.attention_dropout,
                                   training=self.training)
