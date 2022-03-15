@@ -51,8 +51,8 @@ class GATLayer(torch.nn.Module):
                                                         out_features,
                                                         leaky_relu_slope,
                                                         attention_dropout,
-                                                        strict_neighbourhoods,
-                                                        sparse)
+                                                        strict_neighbourhoods=strict_neighbourhoods,
+                                                        sparse=sparse)
                                           for _ in range(num_heads)])
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
