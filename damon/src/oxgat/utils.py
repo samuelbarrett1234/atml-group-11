@@ -150,7 +150,8 @@ class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
 def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
     """Applies dropout to a sparse tensor.
     """
-    assert x.is_sparse(), "Input is not sparse"
+    assert x.is_sparse, "Input is not sparse"
+    x = x.coalesce()
     new_values = F.dropout(x.values(), p=p, training=training)
     return torch.sparse_coo_tensor(values=new_values, 
                                    indices=x.indices(),

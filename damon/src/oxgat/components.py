@@ -182,11 +182,9 @@ class AttentionHead(torch.nn.Module):
     def _sparse_attention(self, x, edge_index):
         n = x.shape[0]
         if not self.strict_neighbourhoods: # Add self-loops
-            self_loops = torch.arange(n, dtype=torch.long).expand(2,n).type_as(x)
+            self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
             edge_index = torch.cat([edge_index, self_loops], dim=1)
         attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
-                                            self.a2(x[edge_index[1,:],:]))
-        e = torch.sparse_coo_tensor(indices=edge_index,
-                                    values=attention_vals,
-                                    size=(n,n))
+                                         self.a2(x[edge_index[1,:],:])).flatten()
+        e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
         return torch.sparse.softmax(e, dim=1)
