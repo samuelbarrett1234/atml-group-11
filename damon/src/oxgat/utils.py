@@ -2,6 +2,7 @@ from typing import Any, Callable, Dict, Optional, Tuple, List
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks.base import Callback
 from pytorch_lightning.utilities import rank_zero_deprecation, rank_zero_warn
@@ -144,3 +145,13 @@ class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
         else:
             msg = f"Metric {self.monitors[idx]} improved. New best score: {current:.3f}"
         return msg
+
+
+def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
+    """Applies dropout to a sparse tensor.
+    """
+    assert x.is_sparse(), "Input is not sparse"
+    new_values = F.dropout(x.values(), p=p, training=training)
+    return torch.sparse_coo_tensor(values=new_values, 
+                                   indices=x.indices(),
+                                   size=x.size())

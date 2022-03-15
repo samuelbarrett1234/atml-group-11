@@ -1,8 +1,8 @@
 import numpy as np
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
+from . import utils
 
 
 class GATLayer(torch.nn.Module):
@@ -26,6 +26,15 @@ class GATLayer(torch.nn.Module):
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
+    strict_neighbourhoods : bool, optional
+        If `True`, only allow a node to pay attention to other nodes connected by
+        a path of length *exactly* `neighbourhood_depth`; if `False` allow
+        connections of length *up to* `neighbourhood_depth`. In particular, when
+        `neighbourhood_depth=1` this controls whether nodes can pay attention to
+        themselves or not. Defaults to `False`.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Must be `False` if
+        `neighbourhood_depth > 1`. Defaults to `True`.
     """
     def __init__(self,
                  in_features: int,
@@ -33,13 +42,17 @@ class GATLayer(torch.nn.Module):
                  leaky_relu_slope: float = 0.2,
                  num_heads: int = 1,
                  is_final_layer: bool = False,
-                 attention_dropout: float = 0):
+                 attention_dropout: float = 0,
+                 strict_neighbourhoods: bool = False,
+                 sparse: bool = True):
         super().__init__()
         self.is_final_layer = is_final_layer
         self.heads = torch.nn.ModuleList([AttentionHead(in_features,
                                                         out_features,
                                                         leaky_relu_slope,
-                                                        attention_dropout)
+                                                        attention_dropout,
+                                                        strict_neighbourhoods,
+                                                        sparse)
                                           for _ in range(num_heads)])
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
@@ -76,20 +89,33 @@ class AttentionHead(torch.nn.Module):
         Length of each of the output node features.
     leaky_relu_slope : int, optional
         Negative slope of the LeakyReLU activation, defaults to `0.2`.
-    neighbourhood_depth : int, optional
-        Calculate attention only between nodes up to this many edges apart.
-        Defaults to 1.
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
+    neighbourhood_depth : int, optional
+        Calculate attention only between nodes up to this many edges apart.
+        Defaults to 1.
+    strict_neighbourhoods : bool, optional
+        If `True`, only allow a node to pay attention to other nodes connected by
+        a path of length *exactly* `neighbourhood_depth`; if `False` allow
+        connections of length *up to* `neighbourhood_depth`. In particular, when
+        `neighbourhood_depth=1` this controls whether nodes can pay attention to
+        themselves or not. Defaults to `False`.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Must be `False` if
+        `neighbourhood_depth > 1`. Defaults to `True`.
     """
     def __init__(self,
                  in_features: int,
                  out_features: int,
                  leaky_relu_slope: bool = 0.2,
                  attention_dropout: float = 0,
-                 neighbourhood_depth: int = 1):
+                 neighbourhood_depth: int = 1,
+                 strict_neighbourhoods: bool = False,
+                 sparse: bool = True):
         super().__init__()
+        assert neighbourhood_depth == 1 or not sparse, \
+            "Sparse computation only supported for `neighbourhood_depth=1`."
 
         self.W = torch.nn.Linear(in_features, out_features, bias=False)
         self.a1 = torch.nn.Linear(out_features, 1, bias=False)
@@ -98,6 +124,8 @@ class AttentionHead(torch.nn.Module):
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
         self.neighbourhood_depth = neighbourhood_depth
         self.attention_dropout = attention_dropout
+        self.strict_neighbourhoods = strict_neighbourhoods
+        self.sparse = sparse
 
         self.reset_parameters()
         
@@ -123,15 +151,25 @@ class AttentionHead(torch.nn.Module):
             The new node feature tensor after applying this module.
         """
         x = self.W(x)
-        attention = F.dropout(self._attention(x, edge_index),
-                              p=self.attention_dropout,
-                              training=self.training)
-        return attention @ x
+        if self.sparse:
+            sparse_attention = self._sparse_attention(x, edge_index)
+            sparse_attention = utils.sparse_dropout(sparse_attention,
+                                                    p=self.attention_dropout,
+                                                    training=self.training)
+            return torch.sparse.mm(sparse_attention, x)
+        else:
+            attention = self._sparse_attention(x, edge_index)
+            attention = F.dropout(attention,
+                                  p=self.attention_dropout,
+                                  training=self.training)
+            return attention @ x
 
     # Calculates the attention matrix for a graph
     def _attention(self, x, edge_index):
         n = x.shape[0]
         adj = torch.squeeze(to_dense_adj(edge_index, max_num_nodes=n))
+        if not self.strict_neighbourhoods: # Add self-loops
+            adj += torch.diag(torch.ones(n, dtype=torch.long))
         if self.neighbourhood_depth > 1:
             # Calculate higher-order adjacency matrix
             adj = torch.matrix_power(adj, self.neighbourhood_depth)
@@ -139,3 +177,16 @@ class AttentionHead(torch.nn.Module):
         zero = -9e15 * torch.ones(n,n).type_as(x)
         e = torch.where(adj > 0, self.a1(x) + self.a2(x).T, zero)
         return F.softmax(self.leaky_relu(e), dim=1)
+
+    # Calculates the sparse attention matrix for a graph
+    def _sparse_attention(self, x, edge_index):
+        n = x.shape[0]
+        if not self.strict_neighbourhoods: # Add self-loops
+            self_loops = torch.arange(n, dtype=torch.long).expand(2,n)
+            edge_index = torch.cat([edge_index, self_loops], dim=1)
+        attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
+                                            self.a2(x[edge_index[1,:],:]))
+        e = torch.sparse_coo_tensor(indices=edge_index,
+                                    values=attention_vals,
+                                    size=(n,n))
+        return torch.sparse.softmax(e, dim=1)
