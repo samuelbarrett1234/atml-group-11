@@ -129,19 +129,25 @@ class TransductiveGATModel(BaseGATModel):
     pubmed : bool, optional
         Whether to apply the architecture changes made for the PubMed dataset
         in the original paper. Defaults to False.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Must be `False` if
+        `neighbourhood_depth > 1`. Defaults to `True`.
     """
-    def __init__(self, in_features: int, num_classes: int, pubmed: bool = False):
+    def __init__(self, in_features: int, num_classes: int,
+                 pubmed: bool = False, sparse: bool = True):
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
         self.gat_layer_1 = components.GATLayer(in_features=in_features,
                                                out_features=8,
                                                num_heads=8,
-                                               attention_dropout=0.6)
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
         self.gat_layer_2 = components.GATLayer(in_features=64,
                                                out_features=num_classes,
                                                num_heads=8 if pubmed else 1,
                                                is_final_layer=True,
-                                               attention_dropout=0.6)
+                                               attention_dropout=0.6,
+                                               sparse=sparse)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -184,19 +190,25 @@ class InductiveGATModel(BaseGATModel):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Must be `False` if
+        `neighbourhood_depth > 1`. Defaults to `True`.
     """
-    def __init__(self, in_features: int, num_classes: int):
+    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
         super().__init__(lr=0.005, train_batch_size=2)
         self.gat_layer_1 = components.GATLayer(in_features=in_features,
                                                out_features=256,
-                                               num_heads=4)
+                                               num_heads=4,
+                                               sparse=sparse)
         self.gat_layer_2 = components.GATLayer(in_features=1024,
                                                out_features=256,
-                                               num_heads=4)
+                                               num_heads=4,
+                                               sparse=sparse)
         self.gat_layer_3 = components.GATLayer(in_features=1024,
                                                out_features=num_classes,
                                                num_heads=6,
-                                               is_final_layer=True)
+                                               is_final_layer=True,
+                                               sparse=sparse)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
