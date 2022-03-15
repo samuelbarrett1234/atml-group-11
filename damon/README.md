@@ -8,14 +8,16 @@ This directory contains implementations of the experimental results in [Graph At
 
 ## Status summary
 
-Currently I have implemented the inductive and transductive GAT models defined in the original paper, with training methods exactly mimicing those in the paper.
+Currently I have implemented the inductive and transductive GAT models defined in the original paper, with training methods exactly mimicing those in the paper. **I have also added sparse tensor calculations and set this as the default mode;** training fully on Cora with GPU now takes at most a couple of minutes.
 
 My results are as follows:
 
-- **Cora (*transductive*):** 86% accuracy in ~600 epochs;
-- **CiteSeer (*transductive*):** 75% accuracy in ~300 epochs;
-- **PubMed (*transductive*):** [] accuracy in ~[] epochs;
-- **PPI (*inductive*):** 0.96 micro-F1 score in ~600 epochs.
+- **Cora (*transductive*):** 87.6% accuracy in ~300 epochs;
+- **CiteSeer (*transductive*):** 77.5% accuracy in ~300 epochs;
+- **PubMed (*transductive*):** 83.8% accuracy in ~300 epochs;
+- **PPI (*inductive*):** 0.96 micro-F1 score in ~600 epochs (need to re-do).
+
+*Note that my training uses the early stopping strategy from the paper, with a patience of 100 epochs.*
 
 ## Directory structure
 
@@ -41,5 +43,5 @@ My implementations are based on PyTorch Lightning, appropriately abstracting awa
 
 ## To do
 
-- Implement sparse tensor operations
-- Extend in various directions
+- Implement GatV2
+- Extend in various other directions
