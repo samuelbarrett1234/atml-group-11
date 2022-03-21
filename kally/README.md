@@ -33,7 +33,8 @@ The results achieved in the notebooks are:
 ### 3. Experiments (Sam)
 
 Experiments are currently WIP.
-The current model gets 73% accuracy on the validation set.
+They are found in notebooks in `src/test` alongside Kally's experiments, and follow a very similar structure.
+The current vanilla transformer model gets 73% accuracy on the validation set, whereas the current universal transformer achieves 89.4% validation set accuracy.
 
 ### 4. Dependencies 
 

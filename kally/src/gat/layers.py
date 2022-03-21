@@ -204,7 +204,7 @@ class Layer_VanillaTransformer(nn.Module):
                  out_dim,
                  n_heads,
                  hidden_dim,
-                 identity_bias=0.01,
+                 identity_bias=0.0,
                  dropout_att=None,
                  dropout_hidden=None):
         super(Layer_VanillaTransformer, self).__init__()

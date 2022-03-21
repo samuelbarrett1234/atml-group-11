@@ -152,3 +152,50 @@ class VanillaTransformer_Transductive(nn.Module):
         for L in self.layers:
             node_matrix = L(node_matrix, adj_matrix)
         return node_matrix
+
+
+class UniversalTransformer_Transductive(nn.Module):
+    def __init__(self, input_dim, num_classes, internal_dim,
+                 num_layers, num_heads,
+                 nonlinear_internal_dim=None,
+                 identity_bias=0.01,
+                 dropout_att=None,
+                 dropout_hidden=None):
+        super(UniversalTransformer_Transductive, self).__init__()
+        key_dim = internal_dim // num_heads
+        assert(key_dim > 0)
+
+        # default to a multiple of the internal dim
+        if nonlinear_internal_dim is None:
+            nonlinear_internal_dim = 2 * internal_dim
+
+        # a universal transformer is basically a single
+        # transformer layer iterated a number of times,
+        # wrapped in two linear layers to convert the
+        # input and output sizes:
+        self.pre = nn.Linear(input_dim, internal_dim, bias=False)
+        self.transformer = Layer_VanillaTransformer(
+            input_dim=internal_dim, out_dim=internal_dim, n_heads=num_heads,
+            key_dim=key_dim,
+            hidden_dim=nonlinear_internal_dim,
+            dropout_att=dropout_att,
+            dropout_hidden=dropout_hidden,
+            identity_bias=identity_bias)
+        self.post = nn.Linear(internal_dim, num_classes)
+        self.num_layers = num_layers
+
+    """ Params:
+        node_matrix: a `N x input_dim` matrix of node features 
+
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+
+        Returns:
+            raw, unnormalised scores for each class, i.e. as specified 
+            here `https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html`
+            to be used in a CrossEntropyLoss
+    """
+    def forward(self, node_matrix, adj_matrix):
+        node_matrix = self.pre(node_matrix)
+        for _ in range(self.num_layers):
+            node_matrix = self.transformer(node_matrix, adj_matrix)
+        return self.post(node_matrix)
