@@ -1,3 +1,4 @@
+from sys import intern
 import torch
 import torch.nn as nn
 
@@ -110,16 +111,28 @@ class GAT_Inductive(nn.Module):
 
 class VanillaTransformer_Transductive(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
-                 num_layers, num_heads, dropout=None):
+                 num_layers, num_heads, dropout=None,
+                 nonlinear_internal_dim=None,
+                 identity_bias=0.01):
         super(VanillaTransformer_Transductive, self).__init__()
         assert(num_layers >= 1)
+        key_dim = internal_dim // num_heads
+        assert(key_dim > 0)
 
         # sequence of node vector dimensions:
         dims = [input_dim] + [internal_dim] * (num_layers - 1) + [num_classes]
 
+        # default to a multiple of the internal dim
+        if nonlinear_internal_dim is None:
+            nonlinear_internal_dim = 2 * internal_dim
+
         # construct transformer layers based on this sequence of dimensions:
         self.layers = nn.ModuleList([
-            Layer_VanillaTransformer(in_dim, out_dim, num_heads, 2 * out_dim, dropout=dropout)
+            Layer_VanillaTransformer(input_dim=in_dim, out_dim=out_dim, n_heads=num_heads,
+                                     key_dim=key_dim,
+                                     hidden_dim=nonlinear_internal_dim,
+                                     dropout=dropout,
+                                     identity_bias=identity_bias)
             for in_dim, out_dim in zip(dims[:-1], dims[1:])
         ])
 

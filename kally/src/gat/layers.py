@@ -117,18 +117,25 @@ class Layer_VanillaMHA(nn.Module):
         out_dim: The dimensionality of the output.
 
         n_heads: The number of attention heads.
+
+        identity_bias: A small number to add to each attention value from
+                       a node to itself, to promote nodes attending to themselves
+                       and allowing a node to distinguish itself from its
+                       neighbours. This is applied just before the softmax.
     """
     def __init__(self,
                  input_dim,
                  key_dim,
                  out_dim,
-                 n_heads):
+                 n_heads,
+                 identity_bias=0.01):
         super(Layer_VanillaMHA, self).__init__()
 
         self.input_dim = input_dim
         self.out_dim = out_dim
         self.num_heads = n_heads
         self.key_dim = key_dim
+        self.identity_bias = identity_bias
 
         self.Wks = nn.Parameter(torch.empty(
             self.num_heads, self.input_dim, self.key_dim))  # keys
@@ -158,8 +165,8 @@ class Layer_VanillaMHA(nn.Module):
                 node_matrix,
                 adjacency_matrix):
         # enforce self-loops:
-        adjacency_matrix = torch.maximum(adjacency_matrix,
-                                         torch.eye(adjacency_matrix.shape[0]))
+        I_n = torch.eye(adjacency_matrix.shape[0])
+        adjacency_matrix = torch.maximum(adjacency_matrix, I_n)
 
         keys = torch.einsum('ij,mjn->min', node_matrix, self.Wks)
         queries = torch.einsum('ij,mjn->min', node_matrix, self.Wqs)
@@ -169,6 +176,7 @@ class Layer_VanillaMHA(nn.Module):
         # `j` to key `k` in attention head `i`
         atts = torch.einsum('ikn,imn->ikm', queries, keys)
         atts /= self.key_dim ** 0.5
+        atts += torch.unsqueeze(self.identity_bias * I_n, 0)  # bias each node towards attending to itself
         atts -= 1.0e16 * torch.unsqueeze(1 - adjacency_matrix, 0)  # restrict vision to neighbourhoods
         atts = self.softmax(atts)
 
@@ -187,6 +195,8 @@ class Layer_VanillaTransformer(nn.Module):
         n_heads: The number of attention heads.
 
         hidden_dim: The dimensionality of the internal hidden layer of the nonlinearity.
+
+        identity_bias: See `Layer_VanillaMHA`.
     """
     def __init__(self,
                  input_dim,
@@ -194,10 +204,12 @@ class Layer_VanillaTransformer(nn.Module):
                  out_dim,
                  n_heads,
                  hidden_dim,
+                 identity_bias=0.01,
                  dropout=None):
         super(Layer_VanillaTransformer, self).__init__()
         # attention
-        self.mha = Layer_VanillaMHA(input_dim, key_dim, out_dim, n_heads)
+        self.mha = Layer_VanillaMHA(input_dim, key_dim, out_dim, n_heads,
+                                    identity_bias=identity_bias)
 
         # want a separate bias than that offered by nn.Linear
         # so that we can force it to initialise to a small constant
