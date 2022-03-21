@@ -205,7 +205,8 @@ class Layer_VanillaTransformer(nn.Module):
                  n_heads,
                  hidden_dim,
                  identity_bias=0.01,
-                 dropout=None):
+                 dropout_att=None,
+                 dropout_hidden=None):
         super(Layer_VanillaTransformer, self).__init__()
         # attention
         self.mha = Layer_VanillaMHA(input_dim, key_dim, out_dim, n_heads,
@@ -224,12 +225,14 @@ class Layer_VanillaTransformer(nn.Module):
         # layer normalisation
         self.ln1, self.ln2 = nn.LayerNorm(out_dim), nn.LayerNorm(out_dim)
         # dropout
-        if dropout is not None:
-            self.drop1, self.drop2, self.drop3 = (
-                nn.Dropout(dropout), nn.Dropout(dropout),
-                nn.Dropout(dropout))
+        if dropout_att is not None:
+            self.drop_att = nn.Dropout(dropout_att)
         else:
-            self.drop1, self.drop2, self.drop3 = None, None, None
+            self.drop_att = None
+        if dropout_hidden is not None:
+            self.drop_hidden = nn.Dropout(dropout_hidden)
+        else:
+            self.drop_hidden = None
 
     """ Params:
         node_matrix: a `N x input_dim` matrix of node features 
@@ -246,19 +249,15 @@ class Layer_VanillaTransformer(nn.Module):
         node_matrix = self.mha(node_matrix, adjacency_matrix)
 
         # dropout
-        if self.drop1 is not None:
-            node_matrix = self.drop1(node_matrix)
+        if self.drop_att is not None:
+            node_matrix = self.drop_att(node_matrix)
 
         # layer norm then nonlinearity
         node_matrix = self.ln1(node_matrix)
         node_matrix = self.relu(self.linear1(node_matrix) + self.bias)
-        if self.drop2 is not None:
-            node_matrix = self.drop2(node_matrix)
+        if self.drop_hidden is not None:  # dropout in the middle
+            node_matrix = self.drop_hidden(node_matrix)
         node_matrix = self.linear2(node_matrix)
-
-        # dropout again
-        if self.drop3 is not None:
-            node_matrix = self.drop3(node_matrix)
 
         # layer norm, then return result
         return self.ln2(node_matrix)

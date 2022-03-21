@@ -1,4 +1,3 @@
-from sys import intern
 import torch
 import torch.nn as nn
 
@@ -111,9 +110,11 @@ class GAT_Inductive(nn.Module):
 
 class VanillaTransformer_Transductive(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
-                 num_layers, num_heads, dropout=None,
+                 num_layers, num_heads,
                  nonlinear_internal_dim=None,
-                 identity_bias=0.01):
+                 identity_bias=0.01,
+                 dropout_att=None,
+                 dropout_hidden=None):
         super(VanillaTransformer_Transductive, self).__init__()
         assert(num_layers >= 1)
         key_dim = internal_dim // num_heads
@@ -131,7 +132,8 @@ class VanillaTransformer_Transductive(nn.Module):
             Layer_VanillaTransformer(input_dim=in_dim, out_dim=out_dim, n_heads=num_heads,
                                      key_dim=key_dim,
                                      hidden_dim=nonlinear_internal_dim,
-                                     dropout=dropout,
+                                     dropout_att=dropout_att,
+                                     dropout_hidden=dropout_hidden,
                                      identity_bias=identity_bias)
             for in_dim, out_dim in zip(dims[:-1], dims[1:])
         ])
