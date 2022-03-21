@@ -104,3 +104,125 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
             repr = torch.mean(repr, dim=0)
 
         return repr
+
+
+class Layer_VanillaMHA(nn.Module):
+    """ Params:
+        input_dim: The dimensionality of the input nodes.
+
+        repr_dim: The embedding dimensionality of the layer.
+
+        n_heads: The number of attention heads.
+    """
+    def __init__(self,
+                 input_dim,
+                 repr_dim,
+                 n_heads):
+        super(Layer_VanillaMHA, self).__init__()
+
+        self.input_dim = input_dim
+        self.out_dim = repr_dim
+        self.num_heads = n_heads
+        self.key_dim = self.out_dim // self.num_heads
+
+        self.Wks = nn.Parameter(torch.empty(
+            self.num_heads, self.input_dim, self.key_dim))  # keys
+        self.Wqs = nn.Parameter(torch.empty(
+            self.num_heads, self.input_dim, self.key_dim))  # queries
+        self.Wvs = nn.Parameter(torch.empty(
+            self.num_heads, self.input_dim, self.key_dim))  # values
+        self.Wo = nn.Parameter(torch.empty(
+            self.num_heads, self.key_dim, self.out_dim))  # output
+
+        nn.init.normal_(self.Wks.data, std=input_dim ** -0.5)
+        nn.init.normal_(self.Wqs.data, std=input_dim ** -0.5)
+        nn.init.normal_(self.Wvs.data, std=input_dim ** -0.5)
+        nn.init.normal_(self.Wo.data, std=input_dim ** -0.5)
+
+        self.softmax = nn.Softmax(dim=-1)
+
+    """ Params:
+        node_matrix: a `N x self.input_dim` matrix of node features 
+
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+
+        Returns:
+            An `N x self.repr_dim` matrix of new node features.
+    """
+    def forward(self,
+                node_matrix,
+                adjacency_matrix):
+        keys = torch.einsum('ij,mkn->min', node_matrix, self.Wks)
+        queries = torch.einsum('ij,mkn->min', node_matrix, self.Wqs)
+        values = torch.einsum('ij,mkn->min', node_matrix, self.Wvs)
+
+        # atts[i, j, k] represents the attention amount from query
+        # `j` to key `k` in attention head `i`
+        atts = torch.einsum('ikn,imn->ikm', queries, keys)
+        atts /= self.key_dim ** 0.5
+        atts -= 1.0e16 * torch.unsqueeze(1 - adjacency_matrix, 0)  # restrict vision to neighbourhoods
+        atts = self.softmax(atts)
+
+        return torch.einsum('ikj,ilm,imn->kn', atts, values, self.Wo)
+
+
+class Layer_VanillaTransformer(nn.Module):
+    """ Params:
+        input_dim: The dimensionality of the input nodes.
+
+        repr_dim: The embedding dimensionality of the layer.
+
+        n_heads: The number of attention heads.
+
+        hidden_dim: The dimensionality of the internal hidden layer of the nonlinearity.
+    """
+    def __init__(self,
+                 input_dim,
+                 repr_dim,
+                 n_heads,
+                 hidden_dim,
+                 dropout=None):
+        super(Layer_VanillaTransformer, self).__init__()
+        # attention
+        self.mha = Layer_VanillaMHA(input_dim, repr_dim, n_heads)
+        # nonlinearity
+        self.nonlinearity = nn.Sequential(
+            nn.Linear(repr_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, repr_dim)
+        )
+        # layer normalisation
+        self.ln1, self.ln2 = nn.LayerNorm(repr_dim), nn.LayerNorm(repr_dim)
+        # dropout
+        if dropout is not None:
+            self.drop1, self.drop2 = nn.Dropout(dropout), nn.Dropout(dropout)
+        else:
+            self.drop1, self.drop2 = None, None
+
+    """ Params:
+        node_matrix: a `N x input_dim` matrix of node features 
+
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+
+        Returns:
+        a `N x repr_dim` matrix of new node features.
+    """
+    def forward(self,
+                node_matrix,
+                adjacency_matrix):
+        # attention
+        node_matrix = self.mha(node_matrix, adjacency_matrix)
+
+        # dropout
+        if self.drop1 is not None:
+            node_matrix = self.drop1(node_matrix)
+
+        # layer norm then nonlinearity
+        node_matrix = self.nonlinearity(self.ln1(node_matrix))
+
+        # dropout again
+        if self.drop2 is not None:
+            node_matrix = self.drop2(node_matrix)
+
+        # layer norm, then return result
+        return self.ln2(node_matrix)

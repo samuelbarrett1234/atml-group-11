@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 
-from gat.layers import Layer_Attention_MultiHead_GAT
+from gat.layers import (Layer_Attention_MultiHead_GAT,
+                        Layer_VanillaTransformer)
 
 
 class GAT_Transductive(nn.Module):
@@ -105,3 +106,34 @@ class GAT_Inductive(nn.Module):
         a_3 = self.activation_3(z_3)
 
         return a_3
+
+
+class VanillaTransformer_Transductive(nn.Module):
+    def __init__(self, input_dim, num_classes, internal_dim,
+                 num_layers, num_heads, dropout=None):
+        super(VanillaTransformer_Transductive, self).__init__()
+        assert(num_layers >= 1)
+
+        # sequence of node vector dimensions:
+        dims = [input_dim] + [internal_dim] * (num_layers - 1) + [num_classes]
+
+        # construct transformer layers based on this sequence of dimensions:
+        self.layers = nn.ModuleList([
+            Layer_VanillaTransformer(in_dim, out_dim, num_heads, 2 * out_dim, dropout=dropout)
+            for in_dim, out_dim in zip(dims[:-1], dims[1:])
+        ])
+
+    """ Params:
+        node_matrix: a `N x input_dim` matrix of node features 
+
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+
+        Returns:
+            raw, unnormalised scores for each class, i.e. as specified 
+            here `https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html`
+            to be used in a CrossEntropyLoss
+    """
+    def forward(self, node_matrix, adj_matrix):
+        for L in self.layers:
+            node_matrix = L(node_matrix, adj_matrix)
+        return node_matrix

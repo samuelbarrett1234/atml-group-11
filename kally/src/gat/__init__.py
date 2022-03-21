@@ -1,6 +1,17 @@
-from gat.models import GAT_Inductive, GAT_Transductive
+from gat.models import (GAT_Inductive,
+                        GAT_Transductive,
+                        VanillaTransformer_Transductive)
 
-from gat.layers import Layer_Attention_MultiHead_GAT
+from gat.layers import (Layer_Attention_MultiHead_GAT,
+                        Layer_VanillaMHA,
+                        Layer_VanillaTransformer)
 
 
-__all__ = ['GAT_Inductive', 'GAT_Transductive', 'Layer_Attention_MultiHead_GAT']
+__all__ = [
+    'GAT_Inductive',
+    'GAT_Transductive',
+    'VanillaTransformer_Transductive',
+    'Layer_Attention_MultiHead_GAT'
+    'Layer_VanillaMHA'
+    'Layer_VanillaTransformer'
+]
