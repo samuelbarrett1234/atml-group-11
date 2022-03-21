@@ -46,7 +46,7 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
             self.dropout = nn.Dropout(p=dropout)
 
         self.W = nn.Parameter(torch.empty(n_heads, input_dim, repr_dim))
-        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim, 1))
+        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim))
 
         # see torch documentation for recommended values for certain activations
         nn.init.xavier_uniform_(self.W.data, gain=np.sqrt(2 / (1 + alpha**2)))
@@ -76,23 +76,22 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
                 node_matrix,
                 adjacency_matrix):
         
-        # the initial linear transformation W_k*h resulting in a shape `K x N x F'`
-        nodes_stacked = torch.stack([node_matrix for _ in range(self.n_heads)])
-        hidden_repr = torch.bmm(nodes_stacked, self.W) # resulting shape n_heads x N x repr_dim
+        hidden_repr = torch.einsum('jk,ikl->ijl', node_matrix, self.W) # resulting shape n_heads x N x repr_dim
 
-        # implementing the linear attention function making use of broadcasting
-        first_half_full_attn = torch.bmm(hidden_repr, self.shared_attention[:, :self.repr_dim, :]).view(self.n_heads, 1, -1)
-        second_half_full_attn = torch.bmm(hidden_repr, self.shared_attention[:, self.repr_dim:, :]).view(self.n_heads, -1, 1)
-        full_attn = self.attention_activation(first_half_full_attn + second_half_full_attn)
+        first_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, :self.repr_dim]) # result shape n_heads x N
+        second_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, self.repr_dim:]) # result shape n_heads x N
+        full_attn = self.attention_activation(
+            torch.unsqueeze(first_half_full_attn, 2)
+            + torch.unsqueeze(second_half_full_attn, 1)) # result shape n_heads x N x N
 
         # masking out non-neighbourhood regions and summing using the attention weights
-        adjacency_stacked = torch.stack([adjacency_matrix for _ in range(self.n_heads)])
-        mask = -1e16 * torch.ones_like(adjacency_stacked)
-        neighbourhood_attention = torch.where(adjacency_stacked > 0, full_attn, mask)
-        neighbourhood_attention = self.softmax(neighbourhood_attention)
+        neighbourhood_attention = self.softmax(
+            full_attn + torch.unsqueeze(-1.0e16 * adjacency_matrix, 0))
         if hasattr(self, 'dropout'):
             neighbourhood_attention = self.dropout(neighbourhood_attention)
-        repr = torch.bmm(neighbourhood_attention, hidden_repr)
+        repr = torch.einsum('ijk,ikl->ijl', neighbourhood_attention, hidden_repr)  # result shape n_heads x N x repr_dim
         
         # final aggregation, resulting in shape `N x K*F'` if concat 
         # and shape `N x F'` if mean (the latter is usually done if
