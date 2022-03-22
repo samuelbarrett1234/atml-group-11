@@ -1,5 +1,5 @@
 {
-    "out_name" : "universal-transformer-small",
+    "tag" : "universal-transformer",
     "type" : "universal",
 
     "train_cfg" :
