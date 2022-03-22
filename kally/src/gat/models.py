@@ -184,6 +184,16 @@ class UniversalTransformer_Transductive(nn.Module):
         self.post = nn.Linear(internal_dim, num_classes)
         self.num_layers = num_layers
 
+    def anneal_attention_dropout(self, drop):
+        """Anneals attention dropout on the transformer sublayer.
+        """
+        self.transformer.anneal_attention_dropout(drop)
+
+    def anneal_hidden_dropout(self, drop):
+        """Anneals hidden dropout on the transformer sublayer.
+        """
+        self.transformer.anneal_hidden_dropout(drop)
+
     """ Params:
         node_matrix: a `N x input_dim` matrix of node features 
 

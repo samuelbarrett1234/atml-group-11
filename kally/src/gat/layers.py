@@ -234,6 +234,26 @@ class Layer_VanillaTransformer(nn.Module):
         else:
             self.drop_hidden = None
 
+    def anneal_attention_dropout(self, drop):
+        """ Sets the dropout of the *attenion layer* (only) to `drop`.
+        """
+        if drop is None:
+            self.drop_att = None
+        elif self.drop_att is not None:
+            self.drop_att.p = drop
+        else:
+            self.drop_att = nn.Dropout(drop)
+
+    def anneal_hidden_dropout(self, drop):
+        """ Sets the dropout of the *hidden layer* (only) to `drop`.
+        """
+        if drop is None:
+            self.drop_hidden = None
+        elif self.drop_hidden is not None:
+            self.drop_hidden.p = drop
+        else:
+            self.drop_hidden = nn.Dropout(drop)
+
     """ Params:
         node_matrix: a `N x input_dim` matrix of node features 
 
