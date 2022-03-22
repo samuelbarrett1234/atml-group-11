@@ -13,9 +13,11 @@ All of my models and layers have been implemented alongside Kally's in `kally/sr
 ### Running Experiments
 
 Experiments are run from a script starting with `run_`; for example if you want to run transductive experiments you invoke `run_transductive.py`.
-There are two types of argument to pass to these scripts.
-Firstly, you need to give it a CSV filename to log training data to (which will be appended to the end of the file).
-Secondly, you need to give it one or more _configuration filenames_ (for examples on the format, see the `configs` folder).
+You need to give this script (at least) 3 arguments.
+The first is the name of the dataset to train on (currently, transductive experiments only support `cora`.)
+Then, you need to give it a CSV filename to log training data to (which will be appended to the end of the file).
+Finally, you need to give it one or more _configuration filenames_ (for examples on the format, see the `configs` folder).
+These can include `*` and `**` to match arbitrary string patterns and arbitrary directories, respectively.
 
 Each configuration file defines a model type with several parameters, but it also defines an "output name".
 This output name is to determine what this model is in competition with (in terms of maximising performance on the validation set).
