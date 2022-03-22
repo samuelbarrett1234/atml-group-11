@@ -4,6 +4,7 @@ import json
 import math
 import collections
 import argparse as ap
+import torch
 from tqdm import tqdm
 from experiments import TransductiveExperiment
 
@@ -42,9 +43,11 @@ if __name__ == "__main__":
 
         with open(fname, "r") as cfg_f:
             cfg = json.load(cfg_f)
-        
+
         with open(log_fname, "a", newline='') as log_f:
-            expr = TransductiveExperiment(args.dataset, cfg, log_f, model_fname)
+            expr = TransductiveExperiment(
+                torch.device('cuda:0'),
+                args.dataset, cfg, log_f, model_fname)
             expr.run()
             if best_for_tag[expr.tag()][0] < expr.best_val():
                 best_for_tag[expr.tag()] = (expr.best_val(), fname)

@@ -165,7 +165,7 @@ class Layer_VanillaMHA(nn.Module):
                 node_matrix,
                 adjacency_matrix):
         # enforce self-loops:
-        I_n = torch.eye(adjacency_matrix.shape[0])
+        I_n = torch.eye(adjacency_matrix.shape[0], device=adjacency_matrix.device)
         adjacency_matrix = torch.maximum(adjacency_matrix, I_n)
 
         keys = torch.einsum('ij,mjn->min', node_matrix, self.Wks)
