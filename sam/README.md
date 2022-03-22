@@ -24,16 +24,17 @@ All of my models and layers have been implemented alongside Kally's in `kally/sr
 ### Running Experiments
 
 Experiments are run from a script starting with `run_`; for example if you want to run transductive experiments you invoke `run_transductive.py`.
-You need to give this script (at least) 3 arguments.
+You need to give this script (at least) two arguments.
 The first is the name of the dataset to train on (currently, transductive experiments only support `cora`.)
-Then, you need to give it a CSV filename to log training data to (which will be appended to the end of the file).
-Finally, you need to give it one or more _configuration filenames_ (for examples on the format, see the `configs` folder).
+Then, you need to give it one or more _configuration filenames_ (for examples on the format, see the `configs` folder).
 These can include `*` and `**` to match arbitrary string patterns and arbitrary directories, respectively.
 
-Each configuration file defines a model type with several parameters, but it also defines an "output name".
-This output name is to determine what this model is in competition with (in terms of maximising performance on the validation set).
-For example, if you wanted to train three different transformers with different dropout rates to see which is best, you would give them all the same output name, so that only the best epoch for the best of the three models is saved.
-The filename of the saved model is then taken from this output name.
+Each configuration file defines a model type with several parameters, but it also defines a "tag".
+This tag is to determine what this model is in competition with (in terms of maximising performance on the validation set).
+For example, if you wanted to train three different transformers with different dropout rates to see which is best, you would give them all the same tag, and then at the end of the program the model will print whichever it found to be best.
+_All_ of them will be saved, however.
+
+The model files, as well as their training logs, will always be written next to the configurations, with the same file name but a different extension.
 
 ### Results
 
