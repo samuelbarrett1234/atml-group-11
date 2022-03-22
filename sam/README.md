@@ -6,6 +6,17 @@ As a result, all setup instructions are deferred to Kally's README.
 
 Note: as per Kally's README, you must have an environment variable `PATH_TO_GAT` pointing to the folder where this code can `import gat`.
 
+### Setup using Docker
+
+This section is optional, and contains instructions on how to run these scripts inside a Docker environment.
+Note: in order to use the GPU you probably want to be using `nvidia-docker`.
+Firstly, to build the Docker image, navigate to the root of the repository and do:
+```nvidia-docker build -t atml_img -f sam/Dockerfile .```
+which creates an image called `atml_img`.
+Now, to create a container, you can do:
+```nvidia-docker run --rm -it --mount type=bind,src=/home/<MY-USERNAME>/atml-group-11,dst=/atml-group-11 --user $(id -u):$(id -g) --name my_atml atml_img```
+where `<MY-USERNAME>` should be replaced by your username, assuming the repo `atml-group-11` is in your home directory (this `--mount` option just allows the container to see the repository).
+
 ### Models and Layers
 
 All of my models and layers have been implemented alongside Kally's in `kally/src/gat`.
