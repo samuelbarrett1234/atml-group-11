@@ -45,7 +45,7 @@ if __name__ == "__main__":
         with open(fname, "r") as cfg_f:
             cfg = json.load(cfg_f)
 
-        with open(log_fname, "a", newline='') as log_f:
+        with open(log_fname, "w", newline='') as log_f:
             expr = TransductiveExperiment(
                 device, args.dataset, cfg, log_f, model_fname)
             expr.run()

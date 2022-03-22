@@ -1,6 +1,7 @@
 import os
 import sys
 import csv
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim 
@@ -128,6 +129,9 @@ class TransductiveExperiment:
         self.dsname = dataset
         self.device = device
         self.cfg = config
+        # firstly, log the config to the log file:
+        json.dump(self.cfg, log_file)
+        log_file.write('\n')
         self.logger = csv.writer(log_file)
         self.model_filename = out_model_filename
         self.best_val_acc = 0.0

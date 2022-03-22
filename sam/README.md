@@ -36,7 +36,7 @@ _All_ of them will be saved, however.
 
 The model files, as well as their training logs, will always be written next to the configurations, with the same file name but a different extension.
 
-### Parameter Sweeping
+#### Parameter Sweeping
 
 With one configuration file per model type, it might at first seem difficult/tedious to test a bunch of different model configurations, when trying to search for the right hyperparameters.
 The `sweep.py` script makes it easy to specify one configuration file to do a grid search over, and automatically generates a bunch of config files for each parameter configuration.
@@ -70,6 +70,12 @@ For example, to specify a grid seach over several parameters you could do:
 ```
 then the corresponding sweep command would be
 ```python sweep.py configs/universal-transformers/small.json models/ train_cfg.learning_rate train_cfg.weight_decay train_cfg.step_lr.step model_kwargs.num_layers model_kwargs.identity_bias model_kwargs.dropout_hidden```
+
+#### Printing Results
+
+Each configuration file during training produces two things (i) a training log, and (ii) the weights of the best epoch of that model's training.
+To calculate, therefore, which model configuration is best, you need to look at all of these training logs.
+A script which does this in an automated way is the `results_agg.py` script.
 
 ### Results
 
