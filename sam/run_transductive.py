@@ -1,8 +1,6 @@
 import os
 import glob
 import json
-import math
-import collections
 import argparse as ap
 import torch
 from tqdm import tqdm
@@ -15,6 +13,10 @@ if __name__ == "__main__":
                         help="Name of dataset, e.g. 'cora', to train on.")
     parser.add_argument("config", type=str, nargs='+',
                         help="Path to config file. Can supply many configs.")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Set this to produce no output.")
+    parser.add_argument("--device", type=str, default='cpu',
+                        help="Set torch device, e.g. cuda:0 or cpu.")
     args = parser.parse_args()
 
     # allow recursive glob
@@ -29,13 +31,12 @@ if __name__ == "__main__":
         print("Error: No config files detected.")
         exit(1)
 
-    print("Running on", len(args.config), "config files...")
+    device = torch.device(args.device)
 
-    # store the best performance seen for each tag
-    # (the keys are tags; the values are pairs (validation-acc, config-name).)
-    best_for_tag = collections.defaultdict(lambda: (-math.inf, None))
+    if not args.quiet:
+        print("Running on", len(args.config), "config files...")
 
-    for fname in tqdm(args.config):
+    for fname in (args.config if args.quiet else tqdm(args.config)):
         # place log and saved model next to config
         base = os.path.splitext(fname)[0]
         log_fname = base + ".log"
@@ -46,13 +47,5 @@ if __name__ == "__main__":
 
         with open(log_fname, "a", newline='') as log_f:
             expr = TransductiveExperiment(
-                torch.device('cuda:0'),
-                args.dataset, cfg, log_f, model_fname)
+                device, args.dataset, cfg, log_f, model_fname)
             expr.run()
-            if best_for_tag[expr.tag()][0] < expr.best_val():
-                best_for_tag[expr.tag()] = (expr.best_val(), fname)
-
-    # print results
-    print("Best validation accuracies achieved:")
-    for name, val_acc_model_fname in best_for_tag.items():
-        print(name, '\t', val_acc_model_fname[0], '\t', val_acc_model_fname[1])
