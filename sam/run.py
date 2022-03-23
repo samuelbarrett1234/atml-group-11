@@ -83,17 +83,14 @@ class Experiment:
     same order. It should yield the parameters for logging.
     """
     def __init__(self, device, dataset_name,
-                 config, log_file, out_model_filename,
+                 config, log_filename, out_model_filename,
                  model_loader_function,
                  dataset_loader_function,
                  model_trainer_function):
         self.dsname = dataset_name
         self.device = device
         self.cfg = config
-        # firstly, log the config to the log file:
-        json.dump(self.cfg, log_file)
-        log_file.write('\n')
-        self.logger = csv.writer(log_file)
+        self.log_filename = log_filename
         self.model_filename = out_model_filename
         self.best_val_score = 0.0
         self.cur_model_idx = 0
@@ -101,6 +98,12 @@ class Experiment:
         self.load_model = model_loader_function
         self.load_dataset = dataset_loader_function
         self.train_model = model_trainer_function
+
+    def __len__(self):
+        # assume that `self.train_model` respects the configuration
+        # file's chosen number of training epochs. This will throw
+        # if not.
+        return self.cfg["train_cfg"]["max_epoch"]
 
     def tag(self):
         """Return the experiment's tag.
@@ -118,43 +121,99 @@ class Experiment:
         log file, which will be written to during this
         function. The best version of the model will be
         saved, also.
+        Yields `None` per epoch (this just allows you to
+        count epochs as they go by.)
         """
-        # load dataset
-        dataset = self.load_dataset(self.dsname)
-        input_dim = dataset[0]
-        n_classes = dataset[1]
-        # move all data to the right device if applicable
-        dataset = move_to_device(self.device, dataset[2:])
-        # construct model
-        model, train_cfgs = self.load_model(
-            self.cfg, input_dim, n_classes)
-        model.to(self.device)
-        # begin training
-        model_train_stats = self.train_model(
-            *dataset,
-            model=model, train_cfgs=train_cfgs)
-        # examine results
-        for epoch, loss, val_score, test_score, p_att, p_hid in model_train_stats:
-            # is it an improvement?
-            is_improvement = (val_score > self.best_val_score)
+        with open(self.log_filename, 'w', newline='') as log_file:
+            # firstly, log the config to the log file:
+            json.dump(self.cfg, log_file)
+            log_file.write('\n')
+            logger = csv.writer(log_file)
 
-            self.logger.writerow([
-                self.cur_model_idx,
-                epoch,
-                loss,
-                val_score,
-                test_score,
-                is_improvement,
-                p_att,
-                p_hid
-            ])
+            # load dataset
+            dataset = self.load_dataset(self.dsname)
+            input_dim = dataset[0]
+            n_classes = dataset[1]
+            # move all data to the right device if applicable
+            dataset = move_to_device(self.device, dataset[2:])
+            # construct model
+            model, train_cfgs = self.load_model(
+                self.cfg, input_dim, n_classes)
+            model.to(self.device)
+            # begin training
+            model_train_stats = self.train_model(
+                *dataset,
+                model=model, train_cfgs=train_cfgs)
+            # examine results
+            for epoch, loss, val_score, test_score, p_att, p_hid in model_train_stats:
+                # is it an improvement?
+                is_improvement = (val_score > self.best_val_score)
 
-            if is_improvement:
-                # save model and update new best
-                self.best_val_score = val_score
-                torch.save(model, self.model_filename)
+                logger.writerow([
+                    self.cur_model_idx,
+                    epoch,
+                    loss,
+                    val_score,
+                    test_score,
+                    is_improvement,
+                    p_att,
+                    p_hid
+                ])
 
-        self.cur_model_idx += 1
+                if is_improvement:
+                    # save model and update new best
+                    self.best_val_score = val_score
+                    torch.save(model, self.model_filename)
+
+                yield None
+
+            self.cur_model_idx += 1
+
+
+class MultipleExperimentRunner:
+    """Runs multiple instances of `Experiment`, done
+    by iterating over the runner. Also has a length
+    estimator, so you can gauge how long it will take.
+    """
+    def __init__(self, experiments):
+        if not isinstance(experiments, list):  # materialise list
+            experiments = list(experiments)
+        self.exprs = experiments
+        self.iterable = iter(self.exprs[0].run())  # current experiment
+
+    def __len__(self):
+        return sum(map(len, self.exprs))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        try:
+            # try to carry on with current experiment
+            return next(self.iterable)
+        except StopIteration:  # if current experiment finishes
+            del self.exprs[0]
+            if len(self.exprs) == 0:  # if there are no more experiments
+                raise StopIteration()
+            else:  # else begin next experiment
+                self.iterable = iter(self.exprs[0].run())
+                return next(self.iterable)
+
+
+def load_experiments(config_filenames):
+    for fname in config_filenames:
+        # place log and saved model next to config
+        base = os.path.splitext(fname)[0]
+        log_fname = base + ".log"
+        model_fname = base + ".pt"
+
+        with open(fname, "r") as cfg_f:
+            cfg = json.load(cfg_f)
+
+        yield Experiment(
+            device, args.dataset, cfg, log_fname, model_fname,
+            *EXPERIMENT_CLASS[args.dataset]
+        )
 
 
 if __name__ == "__main__":
@@ -191,17 +250,11 @@ if __name__ == "__main__":
     if not args.quiet:
         print("Running on", len(args.config), "config files...")
 
-    for fname in (args.config if args.quiet else tqdm(args.config)):
-        # place log and saved model next to config
-        base = os.path.splitext(fname)[0]
-        log_fname = base + ".log"
-        model_fname = base + ".pt"
-
-        with open(fname, "r") as cfg_f:
-            cfg = json.load(cfg_f)
-
-        with open(log_fname, "w", newline='') as log_f:
-            expr = Experiment(
-                device, args.dataset, cfg, log_f, model_fname,
-                *EXPERIMENT_CLASS[args.dataset])
-            expr.run()
+    # load experiments, then pass them to the MultipleExperimentRunner
+    runner = MultipleExperimentRunner(load_experiments(args.config))
+    if not args.quiet:
+        runner = tqdm(runner)
+    # iterate through the runner to run all of the experiments
+    for _ in runner:
+        pass
+    # done!
