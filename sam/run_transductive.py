@@ -40,7 +40,7 @@ if __name__ == "__main__":
         # place log and saved model next to config
         base = os.path.splitext(fname)[0]
         log_fname = base + ".log"
-        model_fname = base + ".pt"
+        model_fname = base
 
         with open(fname, "r") as cfg_f:
             cfg = json.load(cfg_f)
