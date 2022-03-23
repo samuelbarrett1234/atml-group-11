@@ -158,7 +158,7 @@ class VanillaTransformer(nn.Module):
         else:
             node_matrix = self.layers[0](node_matrix, adj_matrix)
             for L in self.layers[1:-1]:
-                node_matrix += L(node_matrix, adj_matrix)
+                node_matrix = node_matrix + L(node_matrix, adj_matrix)
             return self.layers[-1](node_matrix, adj_matrix)
 
 
@@ -221,5 +221,5 @@ class UniversalTransformer(nn.Module):
             if not self.skip_conn:
                 node_matrix = next_matrix
             else:
-                node_matrix += next_matrix
+                node_matrix = node_matrix + next_matrix
         return self.post(node_matrix)
