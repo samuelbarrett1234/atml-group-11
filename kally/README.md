@@ -30,12 +30,6 @@ The results achieved in the notebooks are:
 
 - 0.766 micro f1-score on PPI - this is a harder task computationally and I only run training for at most 50 epochs. The weights of the model are available in the file `src/test/ind_model.pt`
 
-### 3. Experiments (Sam)
-
-Experiments are currently WIP.
-They are found in notebooks in `src/test` alongside Kally's experiments, and follow a very similar structure.
-The current vanilla transformer model gets 73% accuracy on the validation set, whereas the current universal transformer achieves 89.4% validation set accuracy.
-
 ### 4. Dependencies 
 
 All dependencies needed to run this code are available in the `Pipfile`. To create a virtual environment and install the dependencies run `pipenv install` in this root directory.
