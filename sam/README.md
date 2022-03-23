@@ -23,9 +23,9 @@ All of my models and layers have been implemented alongside Kally's in `kally/sr
 
 ### Running Experiments
 
-Experiments are run from a script starting with `run_`; for example if you want to run transductive experiments you invoke `run_transductive.py`.
+All experiments are run from a script starting with the `run.py` script.
 You need to give this script (at least) two arguments.
-The first is the name of the dataset to train on (currently, transductive experiments only support `cora`.)
+The first is the name of the dataset to train on (currently, transductive experiments only support `cora` and inductive datasets only support `ppi`).
 Then, you need to give it one or more _configuration filenames_ (for examples on the format, see the `configs` folder).
 These can include `*` and `**` to match arbitrary string patterns and arbitrary directories, respectively.
 
@@ -80,7 +80,7 @@ For example, to specify a grid seach over several parameters you could do:
 }
 ```
 then the corresponding sweep command would be
-```python sweep.py configs/universal-transformers/small.json models/ train_cfg.learning_rate train_cfg.weight_decay train_cfg.step_lr.step model_kwargs.num_layers model_kwargs.identity_bias model_kwargs.dropout_hidden```
+```python sweep.py config-patterns/ut-small.json models/ train_cfg.learning_rate train_cfg.weight_decay train_cfg.step_lr.step model_kwargs.num_layers model_kwargs.identity_bias model_kwargs.dropout_hidden```
 
 #### Printing Results
 
