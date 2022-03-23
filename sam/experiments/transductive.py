@@ -1,33 +1,7 @@
-import os
-import sys
-import csv
-import json
 import torch
 import torch.nn as nn
 import torch.optim as optim 
 import torch_geometric as tg
-from experiments.utils import extract_train_configs
-sys.path.append(os.environ['PATH_TO_GAT'])
-from gat import VanillaTransformer_Transductive, UniversalTransformer_Transductive
-
-
-def load_model(cfg, input_dim, n_classes):
-    """Loads model from given configuration.
-    See `configs` folder for example model configurations.
-    """
-    assert("type" in cfg)
-    kwargs = cfg.get("model_kwargs", {})
-    kwargs["input_dim"] = input_dim
-    kwargs["num_classes"] = n_classes
-    if cfg["type"] == "vanilla":
-        model = VanillaTransformer_Transductive(**kwargs)
-    elif cfg["type"] == "universal":
-        model = UniversalTransformer_Transductive(**kwargs)
-    else:
-        raise NotImplementedError(f"Model type {cfg['type']} not supported.")
-
-    train_cfgs = extract_train_configs(cfg)
-    return model, train_cfgs
 
 
 def load_dataset(dsname):
@@ -57,7 +31,7 @@ def load_dataset(dsname):
         raise NotImplementedError(f"Dataset {dsname} is not implemented.")
 
 
-def train_model(nodes, adjacency_matrix, labels,
+def train_model(nodes, labels, adjacency_matrix,
                 train_mask, val_mask, test_mask,
                 model, train_cfgs):
     """Train given model on given dataset, according to some
@@ -112,87 +86,3 @@ def train_model(nodes, adjacency_matrix, labels,
 
         yield (epoch, float(loss), float(val_acc),
                float(test_acc), p_att, p_hid)
-
-
-class TransductiveExperiment:
-    """Perform a transductive experiment on the given dataset,
-    using the model specified in the given config, outputting
-    results to the given log file, and saving the best version
-    of the model to the given filename. The device to train on
-    is specified using `device`.
-
-    Use `run` to launch an instance of training. You can call
-    this multiple times if you want to train several independent
-    models and keep only the best one.
-    """
-    def __init__(self, device, dataset, config, log_file, out_model_filename):
-        self.dsname = dataset
-        self.device = device
-        self.cfg = config
-        # firstly, log the config to the log file:
-        json.dump(self.cfg, log_file)
-        log_file.write('\n')
-        self.logger = csv.writer(log_file)
-        self.model_filename = out_model_filename
-        self.best_val_acc = 0.0
-        self.cur_model_idx = 0
-        self._tag = config.get("tag", "<NO-TAG>")
-
-    def tag(self):
-        """Return the experiment's tag.
-        """
-        return self._tag
-
-    def best_val(self):
-        """Return best performance on validation set.
-        """
-        return self.best_val_acc
-
-    def run(self):
-        """Train fresh model on the given dataset, return
-        some statistics. For more statistics, consult the
-        log file, which will be written to during this
-        function. The best version of the model will be
-        saved, also.
-        """
-        # load dataset
-        (input_dim, n_classes,
-         nodes, labels, adjacency_matrix,
-         train_mask, val_mask, test_mask) = load_dataset(self.dsname)
-        # move all data to the right device
-        nodes = nodes.to(self.device)
-        labels = labels.to(self.device)
-        adjacency_matrix = adjacency_matrix.to(self.device)
-        train_mask = train_mask.to(self.device)
-        val_mask = val_mask.to(self.device)
-        test_mask = test_mask.to(self.device)
-        # construct model
-        model, train_cfgs = load_model(
-            self.cfg, input_dim, n_classes)
-        model.to(self.device)
-        # begin training
-        model_train_stats = train_model(
-            nodes, adjacency_matrix, labels, train_mask, val_mask,
-            test_mask, model, train_cfgs)
-        # examine results
-        for epoch, loss, val_acc, test_acc, p_att, p_hid in model_train_stats:
-            # is it an improvement?
-            is_improvement = (val_acc > self.best_val_acc)
-
-            self.logger.writerow([
-                self.cur_model_idx,
-                epoch,
-                loss,
-                val_acc,
-                test_acc,
-                is_improvement,
-                p_att,
-                p_hid
-            ])
-
-            if is_improvement:
-                # save model and update new best
-                self.best_val_acc = val_acc
-                torch.save(model, self.model_filename + ".pt")
-
-        self.cur_model_idx += 1

@@ -1,4 +1,8 @@
+import os
+import sys
 import math
+sys.path.append(os.environ['PATH_TO_GAT'])
+from gat import VanillaTransformer, UniversalTransformer
 
 
 def anneal_dropout(start, time, init, inc):
@@ -35,3 +39,22 @@ def extract_train_configs(cfg):
         )
 
     return train_cfgs
+
+
+def load_model(cfg, input_dim, n_classes):
+    """Loads model from given configuration.
+    See `configs` folder for example model configurations.
+    """
+    assert("type" in cfg)
+    kwargs = cfg.get("model_kwargs", {})
+    kwargs["input_dim"] = input_dim
+    kwargs["num_classes"] = n_classes
+    if cfg["type"] == "vanilla":
+        model = VanillaTransformer(**kwargs)
+    elif cfg["type"] == "universal":
+        model = UniversalTransformer(**kwargs)
+    else:
+        raise NotImplementedError(f"Model type {cfg['type']} not supported.")
+
+    train_cfgs = extract_train_configs(cfg)
+    return model, train_cfgs

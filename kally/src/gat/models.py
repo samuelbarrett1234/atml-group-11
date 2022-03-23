@@ -108,17 +108,19 @@ class GAT_Inductive(nn.Module):
         return a_3
 
 
-class VanillaTransformer_Transductive(nn.Module):
+class VanillaTransformer(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
                  num_layers, num_heads,
                  nonlinear_internal_dim=None,
                  identity_bias=0.01,
                  dropout_att=None,
-                 dropout_hidden=None):
-        super(VanillaTransformer_Transductive, self).__init__()
+                 dropout_hidden=None,
+                 skip_conn=False):
+        super(VanillaTransformer, self).__init__()
         assert(num_layers >= 1)
         key_dim = internal_dim // num_heads
         assert(key_dim > 0)
+        self.skip_conn = skip_conn
 
         # sequence of node vector dimensions:
         dims = [input_dim] + [internal_dim] * (num_layers - 1) + [num_classes]
@@ -149,21 +151,29 @@ class VanillaTransformer_Transductive(nn.Module):
             to be used in a CrossEntropyLoss
     """
     def forward(self, node_matrix, adj_matrix):
-        for L in self.layers:
-            node_matrix = L(node_matrix, adj_matrix)
-        return node_matrix
+        if not self.skip_conn:
+            for L in self.layers:
+                node_matrix = L(node_matrix, adj_matrix)
+            return node_matrix
+        else:
+            node_matrix = self.layers[0](node_matrix, adj_matrix)
+            for L in self.layers[1:-1]:
+                node_matrix += L(node_matrix, adj_matrix)
+            return self.layers[-1](node_matrix, adj_matrix)
 
 
-class UniversalTransformer_Transductive(nn.Module):
+class UniversalTransformer(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
                  num_layers, num_heads,
                  nonlinear_internal_dim=None,
                  identity_bias=0.01,
                  dropout_att=None,
-                 dropout_hidden=None):
-        super(UniversalTransformer_Transductive, self).__init__()
+                 dropout_hidden=None,
+                 skip_conn=False):
+        super(UniversalTransformer, self).__init__()
         key_dim = internal_dim // num_heads
         assert(key_dim > 0)
+        self.skip_conn = skip_conn
 
         # default to a multiple of the internal dim
         if nonlinear_internal_dim is None:
@@ -207,5 +217,9 @@ class UniversalTransformer_Transductive(nn.Module):
     def forward(self, node_matrix, adj_matrix):
         node_matrix = self.pre(node_matrix)
         for _ in range(self.num_layers):
-            node_matrix = self.transformer(node_matrix, adj_matrix)
+            next_matrix = self.transformer(node_matrix, adj_matrix)
+            if not self.skip_conn:
+                node_matrix = next_matrix
+            else:
+                node_matrix += next_matrix
         return self.post(node_matrix)
