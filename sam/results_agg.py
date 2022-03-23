@@ -24,10 +24,13 @@ if __name__ == "__main__":
             # now read the training logs in CSV format
             for row in csv.reader(f):
                 # if the validation accuracy is better, save it
-                if row[3] > best_for_tag[cfg["tag"]]:
-                    best_for_tag[cfg["tag"]] = (row[3], cfg)
+                val_acc = float(row[3])
+                if val_acc > best_for_tag[cfg["tag"]][0]:
+                    best_for_tag[cfg["tag"]] = (val_acc, cfg)
 
     print("The bests found were:")
     for tag, acc_cfg in best_for_tag.items():
-        print(f"Tag {tag} achieved validation accuracy {acc_cfg[0]} using configuration:")
-        print(acc_cfg[1])
+        print("-----------------------")
+        print(f"Tag '{tag}' achieved validation accuracy {acc_cfg[0]} using configuration:")
+        pretty_cfg = json.dumps(acc_cfg[1], indent=4, sort_keys=True)
+        print(pretty_cfg)
