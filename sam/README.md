@@ -35,6 +35,17 @@ For example, if you wanted to train three different transformers with different 
 _All_ of them will be saved, however.
 
 The model files, as well as their training logs, will always be written next to the configurations, with the same file name but a different extension.
+Training logs contain the JSON model configuration, followed by CSV-formatted data with the following data, one per epoch:
+```model-index,epoch,loss,val_acc,test_acc,is_improvement,p_att,p_hid```
+which represent as follows:
+- The model index, in case of repeated experiments. Currently this is not supported and is always 0.
+- The epoch number
+- The training loss at that epoch
+- The validation set accuracy at that epoch
+- The test set accuracy at that epoch
+- Whether or not this validation set accuracy was an improvement on the previous best _for this model architecture_
+- The dropout value on attention, if using annealed attention dropout
+- The dropout value on the hidden layer, if using annealed hidden dropout
 
 #### Parameter Sweeping
 
@@ -77,5 +88,12 @@ Each configuration file during training produces two things (i) a training log, 
 To calculate, therefore, which model configuration is best, you need to look at all of these training logs.
 A script which does this in an automated way is the `results_agg.py` script.
 
+The `results_agg.py` script contains a few options to make the output cleaner.
+For example, `--configs` only prints the JSON configs which performed best, and `--filenames` only prints the filenames of the corresponding training logs of the best performers.
+The latter is useful because it means you can execute
+```python results_agg.py --filenames "models/*.log" | xargs -I {} sh -c 'filename=$1; allfile=${filename%.log}; cp $allfile.* best-models/' -- {}```
+which copies not only the training log, but the config file and model file, of the best models in the `models/` folder to the `best-models/` folder.
+
 ### Results
 
+The chosen architectures, training results and models are stored in the `best-models/` folder.
