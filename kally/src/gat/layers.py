@@ -88,7 +88,7 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
 
         # masking out non-neighbourhood regions and summing using the attention weights
         neighbourhood_attention = self.softmax(
-            full_attn + torch.unsqueeze(-1.0e16 * adjacency_matrix, 0))
+            full_attn + torch.unsqueeze(-1.0e16 * (1-adjacency_matrix), 0))
         if hasattr(self, 'dropout'):
             neighbourhood_attention = self.dropout(neighbourhood_attention)
         repr = torch.einsum('ijk,ikl->ijl', neighbourhood_attention, hidden_repr)  # result shape n_heads x N x repr_dim
