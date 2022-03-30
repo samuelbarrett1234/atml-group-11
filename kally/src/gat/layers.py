@@ -1,6 +1,6 @@
-from re import S
 import torch 
 import torch.nn as nn
+
 import numpy as np
 
 
@@ -47,7 +47,7 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
             self.dropout = nn.Dropout(p=dropout)
 
         self.W = nn.Parameter(torch.empty(n_heads, input_dim, repr_dim))
-        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim, 1))
+        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim))
 
         # see torch documentation for recommended values for certain activations
         nn.init.xavier_uniform_(self.W.data, gain=np.sqrt(2 / (1 + alpha**2)))
@@ -77,23 +77,22 @@ class Layer_Attention_MultiHead_GAT(nn.Module):
                 node_matrix,
                 adjacency_matrix):
         
-        # the initial linear transformation W_k*h resulting in a shape `K x N x F'`
-        nodes_stacked = torch.stack([node_matrix for _ in range(self.n_heads)])
-        hidden_repr = torch.bmm(nodes_stacked, self.W) # resulting shape n_heads x N x repr_dim
+        hidden_repr = torch.einsum('jk,ikl->ijl', node_matrix, self.W) # resulting shape n_heads x N x repr_dim
 
-        # implementing the linear attention function making use of broadcasting
-        first_half_full_attn = torch.bmm(hidden_repr, self.shared_attention[:, :self.repr_dim, :]).view(self.n_heads, 1, -1)
-        second_half_full_attn = torch.bmm(hidden_repr, self.shared_attention[:, self.repr_dim:, :]).view(self.n_heads, -1, 1)
-        full_attn = self.attention_activation(first_half_full_attn + second_half_full_attn)
+        first_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, :self.repr_dim]) # result shape n_heads x N
+        second_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, self.repr_dim:]) # result shape n_heads x N
+        full_attn = self.attention_activation(
+            torch.unsqueeze(first_half_full_attn, 2)
+            + torch.unsqueeze(second_half_full_attn, 1)) # result shape n_heads x N x N
 
         # masking out non-neighbourhood regions and summing using the attention weights
-        adjacency_stacked = torch.stack([adjacency_matrix for _ in range(self.n_heads)])
-        mask = -1e16 * torch.ones_like(adjacency_stacked)
-        neighbourhood_attention = torch.where(adjacency_stacked > 0, full_attn, mask)
-        neighbourhood_attention = self.softmax(neighbourhood_attention)
+        neighbourhood_attention = self.softmax(
+            full_attn + torch.unsqueeze(-1.0e16 * (1-adjacency_matrix), 0))
         if hasattr(self, 'dropout'):
             neighbourhood_attention = self.dropout(neighbourhood_attention)
-        repr = torch.bmm(neighbourhood_attention, hidden_repr)
+        repr = torch.einsum('ijk,ikl->ijl', neighbourhood_attention, hidden_repr)  # result shape n_heads x N x repr_dim
         
         # final aggregation, resulting in shape `N x K*F'` if concat 
         # and shape `N x F'` if mean (the latter is usually done if
@@ -281,3 +280,183 @@ class Layer_VanillaTransformer(nn.Module):
 
         # layer norm, then return result
         return self.ln2(node_matrix)
+
+
+class Layer_Attention_Dynamic_GATWithBias(nn.Module):
+    """ This is a modification of the original GAT attention
+        (as in Layer_Attention_MultiHead_GAT) to add a trainable bias
+        for each pair of nodes before computing the LeakyReLU,
+        effectively turning the attention to a dynamic attention 
+
+        Note: This method requires knowledge of the number of 
+        nodes in advance and tehrefore is onlu suitable for 
+        transductive tasks
+
+        Params:
+            All params in the plus
+
+            n_nodes: the number of nodes that the input graphs will have
+
+            epsilon_bias: the additional regulariser for the attentional biases
+    """
+    def __init__(self,
+                 input_dim,
+                 repr_dim,
+                 n_heads,
+                 n_nodes,
+                 epsilon_bias=0.01,
+                 alpha=0.2,
+                 attention_aggr='concat',
+                 dropout=0.6):
+        super(Layer_Attention_Dynamic_GATWithBias, self).__init__()
+
+        self.repr_dim = repr_dim
+        self.n_heads = n_heads
+        self.epsilon_bias = epsilon_bias
+
+        if attention_aggr not in ['concat', 'mean']:
+            raise ValueError('Unexpected value for attention_aggr: Attention aggregation scheme must either be `concat` or `mean`')
+        self.attention_aggr = attention_aggr
+
+        if dropout is not None:
+            self.dropout = nn.Dropout(p=dropout)
+
+        self.W = nn.Parameter(torch.empty(n_heads, input_dim, repr_dim))
+        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim))
+        self.attention_biases = nn.Parameter(torch.empty(n_nodes, n_nodes))
+
+        # see torch documentation for recommended values for certain activations
+        nn.init.xavier_uniform_(self.W.data, gain=np.sqrt(2 / (1 + alpha**2)))
+        nn.init.xavier_uniform_(self.shared_attention.data, gain=np.sqrt(2 / (1 + alpha**2)))
+        nn.init.xavier_uniform_(self.attention_biases.data, gain=np.sqrt(2 / (1 + alpha**2)))
+        
+        self.attention_activation = nn.LeakyReLU(alpha)
+        self.softmax = nn.Softmax(dim=-1)
+
+    """ Params:
+        node_matrix: a `N x F` matrix of node features 
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+        Returns:
+            if self.attention_aggr == 'concat':
+                An `N x K*F'` matrix where F' is the representation
+                dimension and K is the number of heads
+            
+            if self.attention_aggr == 'mean':
+                An `N x F'` matrix where F' is the representation
+                dimension
+            The results correspond to equations (4) and (6) in the paper 
+            without the nonlinearity sigma
+    """
+    def forward(self,
+                node_matrix,
+                adjacency_matrix):
+        
+        hidden_repr = torch.einsum('jk,ikl->ijl', node_matrix, self.W) # resulting shape n_heads x N x repr_dim
+
+        first_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, :self.repr_dim]) # result shape n_heads x N
+        second_half_full_attn = torch.einsum(
+            'ijl,il->ij', hidden_repr, self.shared_attention[:, self.repr_dim:]) # result shape n_heads x N
+        static_attn_preactivation = torch.unsqueeze(first_half_full_attn, 2) + torch.unsqueeze(second_half_full_attn, 1)
+        dynamic_attn_preactivation = static_attn_preactivation + self.epsilon_bias*self.attention_biases
+        full_attn = self.attention_activation(dynamic_attn_preactivation) # result shape n_heads x N x N
+
+        neighbourhood_attention = self.softmax(
+            full_attn + torch.unsqueeze(-1.0e16 * (1-adjacency_matrix), 0))
+        
+        if hasattr(self, 'dropout'):
+            neighbourhood_attention = self.dropout(neighbourhood_attention)
+        repr = torch.einsum('ijk,ikl->ijl', neighbourhood_attention, hidden_repr)  # result shape n_heads x N x repr_dim
+        
+        # final aggregation, resulting in shape `N x K*F'` if concat 
+        # and shape `N x F'` if mean (the latter is usually done if
+        # the layer is final)
+        if self.attention_aggr == 'concat':
+            repr = torch.cat(torch.unbind(repr, dim=0), dim=1)
+
+        else: # self.attention_aggr == 'mean'
+            repr = torch.mean(repr, dim=0)
+
+        return repr
+
+
+class Layer_Attention_MultiHead_GATv2(nn.Module):
+    """ This is just the GATv2 version of the Layer_Attention_MultiHead_GAT layer
+        The only difference with the original GAT is that the order of the second 
+        linear transformation and the LeakyReLU are switched
+    """
+    def __init__(self,
+                 input_dim,
+                 repr_dim,
+                 n_heads,
+                 alpha=0.2,
+                 attention_aggr='concat',
+                 dropout=0.6):
+        super(Layer_Attention_MultiHead_GATv2, self).__init__()
+
+        self.repr_dim = repr_dim
+        self.n_heads = n_heads
+
+        if attention_aggr not in ['concat', 'mean']:
+            raise ValueError('Unexpected value for attention_aggr: Attention aggregation scheme must either be `concat` or `mean`')
+        self.attention_aggr = attention_aggr
+
+        if dropout is not None:
+            self.dropout = nn.Dropout(p=dropout)
+
+        self.W = nn.Parameter(torch.empty(n_heads, input_dim, repr_dim))
+        self.shared_attention = nn.Parameter(torch.empty(n_heads, 2*repr_dim))
+
+        # see torch documentation for recommended values for certain activations
+        nn.init.xavier_uniform_(self.W.data, gain=np.sqrt(2 / (1 + alpha**2)))
+        nn.init.xavier_uniform_(self.shared_attention.data, gain=np.sqrt(2 / (1 + alpha**2)))
+        
+        self.attention_activation = nn.LeakyReLU(alpha)
+        self.softmax = nn.Softmax(dim=-1)
+
+    """ Params:
+        node_matrix: a `N x F` matrix of node features 
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+        Returns:
+            if self.attention_aggr == 'concat':
+                An `N x K*F'` matrix where F' is the representation
+                dimension and K is the number of heads
+            
+            if self.attention_aggr == 'mean':
+                An `N x F'` matrix where F' is the representation
+                dimension
+            The results correspond to equations (4) and (6) in the paper 
+            without the nonlinearity sigma
+    """
+    def forward(self,
+                node_matrix,
+                adjacency_matrix):
+        
+        hidden_repr = torch.einsum('jk,ikl->ijl', node_matrix, self.W)
+        activated_hidden_repr = self.attention_activation(hidden_repr)
+
+        first_half_full_attn = torch.einsum(
+            'ijl,il->ij', activated_hidden_repr, self.shared_attention[:, :self.repr_dim]) # result shape n_heads x N
+        second_half_full_attn = torch.einsum(
+            'ijl,il->ij', activated_hidden_repr, self.shared_attention[:, self.repr_dim:]) # result shape n_heads x N
+        full_attn = torch.unsqueeze(first_half_full_attn, 2) \
+            + torch.unsqueeze(second_half_full_attn, 1) # result shape n_heads x N x N
+
+        # masking out non-neighbourhood regions and summing using the attention weights
+        neighbourhood_attention = self.softmax(
+            full_attn + torch.unsqueeze(-1.0e16 * (1-adjacency_matrix), 0))
+        
+        if hasattr(self, 'dropout'):
+            neighbourhood_attention = self.dropout(neighbourhood_attention)
+        repr = torch.einsum('ijk,ikl->ijl', neighbourhood_attention, hidden_repr)  # result shape n_heads x N x repr_dim
+        
+        # final aggregation, resulting in shape `N x K*F'` if concat 
+        # and shape `N x F'` if mean (the latter is usually done if
+        # the layer is final)
+        if self.attention_aggr == 'concat':
+            repr = torch.cat(torch.unbind(repr, dim=0), dim=1)
+
+        else: # self.attention_aggr == 'mean'
+            repr = torch.mean(repr, dim=0)
+
+        return repr
