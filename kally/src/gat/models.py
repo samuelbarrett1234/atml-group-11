@@ -140,6 +140,18 @@ class VanillaTransformer(nn.Module):
             for in_dim, out_dim in zip(dims[:-1], dims[1:])
         ])
 
+    def anneal_attention_dropout(self, drop):
+        """Anneals attention dropout on the transformer sublayer.
+        """
+        for L in self.layers:
+            L.anneal_attention_dropout(drop)
+
+    def anneal_hidden_dropout(self, drop):
+        """Anneals hidden dropout on the transformer sublayer.
+        """
+        for L in self.layers:
+            L.anneal_attention_dropout(drop)
+
     """ Params:
         node_matrix: a `N x input_dim` matrix of node features 
 
