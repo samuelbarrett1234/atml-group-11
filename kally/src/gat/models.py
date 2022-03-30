@@ -2,7 +2,8 @@ import torch
 import torch.nn as nn
 
 from gat.layers import (Layer_Attention_MultiHead_GAT,
-                        Layer_VanillaTransformer)
+                        Layer_VanillaTransformer,
+                        Layer_Attention_Dynamic_GATWithBias)
 
 
 class GAT_Transductive(nn.Module):
