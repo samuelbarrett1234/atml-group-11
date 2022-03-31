@@ -431,7 +431,7 @@ class Layer_Attention_MultiHead_GATv2(nn.Module):
     def forward(self,
                 node_matrix,
                 adjacency_matrix):
-        
+
         hidden_repr = torch.einsum('jk,ikl->ijl', node_matrix, self.W)
         activated_hidden_repr = self.attention_activation(hidden_repr)
 

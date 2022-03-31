@@ -251,15 +251,16 @@ class GATv2(nn.Module):
         assert(key_dim > 0)
         self.skip_conn = skip_conn
 
-        # sequence of node vector dimensions:
-        dims = [input_dim] + [key_dim] * (num_layers - 1) + [num_classes]
+        # sequence of node vector dimensions (for inputs and outputs):
+        in_dims = [input_dim] + [internal_dim] * (num_layers - 1)
+        out_dims = [key_dim] * (num_layers - 1) + [num_classes]
 
         # construct transformer layers based on this sequence of dimensions:
         self.layers = nn.ModuleList([
             Layer_Attention_MultiHead_GATv2(
                 input_dim=in_dim, repr_dim=out_dim, n_heads=num_heads,
                 alpha=alpha, attention_aggr=attention_aggr, dropout=dropout)
-            for in_dim, out_dim in zip(dims[:-1], dims[1:])
+            for in_dim, out_dim in zip(in_dims, out_dims)
         ])
 
     """ Params:
