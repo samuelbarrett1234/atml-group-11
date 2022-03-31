@@ -64,9 +64,12 @@ def train_model(train_loader,
         lr=train_cfgs["learning_rate"],
         weight_decay=train_cfgs["weight_decay"])
 
-    sched = optim.lr_scheduler.StepLR(
-        optimiser, train_cfgs["step_lr"]["step"],
-        gamma=train_cfgs["step_lr"]["gamma"])
+    if "step_lr" in train_cfgs:
+        sched = optim.lr_scheduler.StepLR(
+            optimiser, train_cfgs["step_lr"]["step"],
+            gamma=train_cfgs["step_lr"]["gamma"])
+    else:
+        sched = None
 
     # begin training
     for epoch in range(train_cfgs["max_epoch"]):
@@ -97,7 +100,8 @@ def train_model(train_loader,
             optimiser.zero_grad()
             loss.backward()
             optimiser.step()
-        sched.step()
+        if sched is not None:
+            sched.step()
 
         # compute validation and testing accuracies
         model.eval()
