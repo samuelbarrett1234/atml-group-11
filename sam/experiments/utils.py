@@ -2,7 +2,8 @@ import os
 import sys
 import math
 sys.path.append(os.environ['PATH_TO_GAT'])
-from gat import VanillaTransformer, UniversalTransformer
+from gat import (VanillaTransformer, UniversalTransformer,
+                 GAT_Inductive, GAT_Transductive, GATv2)
 
 
 def anneal_dropout(start, time, init, inc):
@@ -53,8 +54,21 @@ def load_model(cfg, input_dim, n_classes):
         model = VanillaTransformer(**kwargs)
     elif cfg["type"] == "universal":
         model = UniversalTransformer(**kwargs)
+    elif cfg["type"] == "GAT_Transductive":
+        model = GAT_Transductive(**kwargs)
+    elif cfg["type"] == "GAT_Inductive":
+        model = GAT_Inductive(**kwargs)
+    elif cfg["type"] == "GATv2":
+        model = GATv2(**kwargs)
     else:
         raise NotImplementedError(f"Model type {cfg['type']} not supported.")
 
     train_cfgs = extract_train_configs(cfg)
+
+    if "dropout_attention" in train_cfgs and not hasattr(model, "anneal_attention_dropout"):
+        raise NotImplementedError("Model type", cfg["type"], "doesn't support dropout annealing.")
+        
+    if "dropout_hidden" in train_cfgs and not hasattr(model, "anneal_hidden_dropout"):
+        raise NotImplementedError("Model type", cfg["type"], "doesn't support dropout annealing.")
+
     return model, train_cfgs

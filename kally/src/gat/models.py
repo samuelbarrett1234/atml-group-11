@@ -3,7 +3,7 @@ import torch.nn as nn
 
 from gat.layers import (Layer_Attention_MultiHead_GAT,
                         Layer_VanillaTransformer,
-                        Layer_Attention_Dynamic_GATWithBias)
+                        Layer_Attention_MultiHead_GATv2)
 
 
 class GAT_Transductive(nn.Module):
@@ -236,3 +236,49 @@ class UniversalTransformer(nn.Module):
             else:
                 node_matrix = node_matrix + next_matrix
         return self.post(node_matrix)
+
+
+class GATv2(nn.Module):
+    def __init__(self, input_dim, num_classes, internal_dim,
+                 num_layers, num_heads,
+                 dropout=None,
+                 skip_conn=False,
+                 alpha=0.2,
+                 attention_aggr='concat'):
+        super(GATv2, self).__init__()
+        assert(num_layers >= 1)
+        key_dim = (internal_dim // num_heads if attention_aggr == 'concat' else internal_dim)
+        assert(key_dim > 0)
+        self.skip_conn = skip_conn
+
+        # sequence of node vector dimensions:
+        dims = [input_dim] + [key_dim] * (num_layers - 1) + [num_classes]
+
+        # construct transformer layers based on this sequence of dimensions:
+        self.layers = nn.ModuleList([
+            Layer_Attention_MultiHead_GATv2(
+                input_dim=in_dim, repr_dim=out_dim, n_heads=num_heads,
+                alpha=alpha, attention_aggr=attention_aggr, dropout=dropout)
+            for in_dim, out_dim in zip(dims[:-1], dims[1:])
+        ])
+
+    """ Params:
+        node_matrix: a `N x input_dim` matrix of node features 
+
+        adjacency_matrix: the `N x N` matrix giving the graph structure
+
+        Returns:
+            raw, unnormalised scores for each class, i.e. as specified 
+            here `https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html`
+            to be used in a CrossEntropyLoss
+    """
+    def forward(self, node_matrix, adj_matrix):
+        if not self.skip_conn:
+            for L in self.layers:
+                node_matrix = L(node_matrix, adj_matrix)
+            return node_matrix
+        else:
+            node_matrix = self.layers[0](node_matrix, adj_matrix)
+            for L in self.layers[1:-1]:
+                node_matrix = node_matrix + L(node_matrix, adj_matrix)
+            return self.layers[-1](node_matrix, adj_matrix)
