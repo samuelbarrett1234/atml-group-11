@@ -5,6 +5,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
+from torch_geometric.transforms import OneHotDegree
+from torch_geometric.data import Data
 
 from . import utils
 
@@ -55,6 +57,7 @@ class GATLayer(torch.nn.Module):
                  sparse: bool = True):
         super().__init__()
         self.is_final_layer = is_final_layer
+        self.in_features = in_features
         self.heads = torch.nn.ModuleList([AttentionHead(in_features,
                                                         out_features,
                                                         leaky_relu_slope,
@@ -131,17 +134,23 @@ class AttentionHead(torch.nn.Module):
         self.a2 = torch.nn.Linear(out_features, 1, bias=False)
 
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
+        self.leaky_relu_slope = leaky_relu_slope
         self.neighbourhood_depth = neighbourhood_depth
         self.attention_dropout = attention_dropout
         self.strict_neighbourhoods = strict_neighbourhoods
         self.sparse = sparse
+        self.out_features = out_features
 
         self.reset_parameters()
         
     def reset_parameters(self):
-        torch.nn.init.xavier_uniform_(self.W.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a1.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a2.weight, gain=np.sqrt(2))
+        W_gain = np.sqrt(1.55/self.W.in_features) # Optimized for ELU
+        a_gain = torch.nn.init.calculate_gain("leaky_relu",
+                                              self.leaky_relu_slope)
+        a_correction = np.sqrt((self.out_features+1)/(2*self.out_features+1))
+        torch.nn.init.xavier_uniform_(self.W.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=a_correction*a_gain)
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=a_correction*a_gain)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
         """Applies this module forwards on an input graph.
@@ -197,3 +206,13 @@ class AttentionHead(torch.nn.Module):
                                          self.a2(x[edge_index[1,:],:])).flatten()
         e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
         return torch.sparse.softmax(e, dim=1)
+
+
+class GATLayerWithDegrees(GATLayer): # TODO: generalise to weighted degree
+    def __init__(self, max_degree, in_features, *args, **kwargs):
+        self.add_degrees = OneHotDegree(max_degree)
+        super().__init__(in_features+max_degree+1, *args, **kwargs)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        x = self.add_degrees(Data(x, edge_index)).x
+        return super().forward(x, edge_index)

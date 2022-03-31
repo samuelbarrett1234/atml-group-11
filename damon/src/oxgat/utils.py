@@ -9,6 +9,8 @@ from pytorch_lightning.utilities import rank_zero_warn
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 import torch
 import torch.nn.functional as F
+import torch_geometric.data
+import torch_geometric.utils
 
 
 class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
@@ -158,3 +160,27 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
     return torch.sparse_coo_tensor(values=new_values, 
                                    indices=x.indices(),
                                    size=x.size())
+
+
+def get_max_degree(dataset: torch_geometric.data.Dataset):
+    """Returns the maximum degree of any node in the dataset"""
+    results = []
+    for i in range(dataset.len()):
+        degrees = get_degrees(dataset.get(i).edge_index)
+        results.append(degrees.max().item())
+    return max(results)
+
+
+def get_degrees(edge_index: torch.Tensor,
+                num_nodes: Optional[int] = None,
+                out: bool = True):
+    """Gets a tensor of the (unweighted) degrees of each node in a graph
+    given its edge index.
+    """
+    N = torch_geometric.utils.num_nodes.maybe_num_nodes(edge_index, num_nodes)
+    degrees = torch.zeros(N, dtype=torch.long)
+    for i in range(N):
+        degrees[i] = (edge_index[1, edge_index[0] == i].unique().size(0)
+                      if out
+                      else edge_index[0,edge_index[1] == i].unique().size(0))
+    return degrees

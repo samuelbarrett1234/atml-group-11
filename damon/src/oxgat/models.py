@@ -242,3 +242,25 @@ class InductiveGATModel(_BaseGATModel):
         pred = torch.round(out)
         acc = f1_score(data.y.cpu(), pred.cpu(), average="micro")
         self.log("test_acc", acc)
+
+
+class TransductiveGATModelWithDegrees(TransductiveGATModel):
+    def __init__(self, in_features: int, num_classes: int, max_degree: int,
+                 pubmed: bool = False, sparse: bool = True):
+        _BaseGATModel.__init__(self, lr=0.01 if pubmed else 0.005,
+                         regularisation=0.001 if pubmed else 0.0005)
+        self.gat_layer_1 = components.GATLayerWithDegrees(
+            max_degree=max_degree,
+            in_features=in_features,
+            out_features=8,
+            num_heads=8,
+            attention_dropout=0.6,
+            sparse=sparse)
+        self.gat_layer_2 = components.GATLayerWithDegrees(
+            max_degree=max_degree,
+            in_features=64,
+            out_features=num_classes,
+            num_heads=8 if pubmed else 1,
+            is_final_layer=True,
+            attention_dropout=0.6,
+            sparse=sparse)

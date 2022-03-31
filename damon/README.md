@@ -12,9 +12,9 @@ Currently I have implemented the inductive and transductive GAT models defined i
 
 My results are as follows:
 
-- **Cora (*transductive*):** 87.6% accuracy in ~300 epochs;
-- **CiteSeer (*transductive*):** 77.5% accuracy in ~300 epochs;
-- **PubMed (*transductive*):** 83.8% accuracy in ~300 epochs;
+- **Cora (*transductive*):** 82.7% accuracy in ~700 epochs;
+- **CiteSeer (*transductive*):** 70.0% accuracy in ~500 epochs;
+- **PubMed (*transductive*):** 78.7% accuracy in ~300 epochs;
 - **PPI (*inductive*):** 0.96 micro-F1 score in ~600 epochs (need to re-do).
 
 *Note that my training uses the early stopping strategy from the paper, with a patience of 100 epochs.*
