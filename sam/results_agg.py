@@ -21,7 +21,8 @@ if __name__ == "__main__":
     # (i) the best validation performance seen so far,
     # and (ii) which configuration achieved it
     # and (iii) the log filename of that configuration
-    best_for_tag = collections.defaultdict(lambda: (-math.inf, None, None))
+    # and (iv) the test accuracy that this model achieved
+    best_for_tag = collections.defaultdict(lambda: (-math.inf, None, None, None))
 
     for fname in glob.glob(args.log_filenames, recursive=True):
         with open(fname, "r") as f:
@@ -32,7 +33,7 @@ if __name__ == "__main__":
                 # if the validation accuracy is better, save it
                 val_acc = float(row[3])
                 if val_acc > best_for_tag[cfg["tag"]][0]:
-                    best_for_tag[cfg["tag"]] = (val_acc, cfg, fname)
+                    best_for_tag[cfg["tag"]] = (val_acc, cfg, fname, float(row[4]))
 
     if args.filenames:
         for values in best_for_tag.values():
@@ -45,6 +46,4 @@ if __name__ == "__main__":
         print("The bests found were:")
         for tag, values in best_for_tag.items():
             print("-----------------------")
-            print(f"Tag '{tag}' achieved validation accuracy {values[0]} using configuration:")
-            pretty_cfg = json.dumps(values[1], indent=4, sort_keys=True)
-            print(pretty_cfg)
+            print(f"Tag '{tag}' achieved validation accuracy {values[0]} and test accuracy {values[3]} using configuration {values[2]}")
