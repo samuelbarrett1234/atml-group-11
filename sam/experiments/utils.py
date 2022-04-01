@@ -18,9 +18,10 @@ def laplacian_pos_emb(A, pos_emb_dim):
     """Compute `pos_emb_dim`-dimensional Laplacian positional
     embeddings for nodes in graph with adjacency matrix A.
     """
-    assert(pos_emb_dim < A.shape[1])
-    _, U = torch.linalg.eigh(norm_laplacian(A))
-    return U[:, 1:pos_emb_dim+1]
+    eigvals, U = torch.linalg.eigh(norm_laplacian(A))
+    start_idx = torch.searchsorted(eigvals, 1.0e-6)
+    assert(start_idx + pos_emb_dim <= A.shape[1])
+    return U[:, start_idx:pos_emb_dim + start_idx]
 
 
 def flip_pos_embs(U):
