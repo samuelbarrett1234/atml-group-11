@@ -1,6 +1,7 @@
 import os
 import sys
 import math
+from tracemalloc import start
 sys.path.append(os.environ['PATH_TO_GAT'])
 from gat import (VanillaTransformer, UniversalTransformer,
                  GAT_Inductive, GAT_Transductive, GATv2)
@@ -10,6 +11,8 @@ import torch
 def norm_laplacian(A):
     """Compute normalised Laplacian of a Torch adjacency matrix A.
     """
+    # ensure we have self loops (we cannot have a node of degree 0)
+    A = torch.maximum(A, torch.eye(A.shape[0], device=A.device))
     D_invsq = torch.diag(torch.sum(A, axis=1) ** -0.5)
     return torch.eye(A.shape[1], device=A.device) - D_invsq @ A @ D_invsq
 
@@ -20,6 +23,7 @@ def laplacian_pos_emb(A, pos_emb_dim):
     """
     eigvals, U = torch.linalg.eigh(norm_laplacian(A))
     start_idx = torch.searchsorted(eigvals, 1.0e-6)
+    start_idx = min(int(start_idx), A.shape[1] - pos_emb_dim)  # safeguard
     assert(start_idx + pos_emb_dim <= A.shape[1])
     return U[:, start_idx:pos_emb_dim + start_idx]
 

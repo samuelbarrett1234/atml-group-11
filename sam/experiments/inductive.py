@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim 
 import torch_geometric as tg
 import sklearn.metrics as metrics
+from experiments.utils import laplacian_pos_emb, flip_pos_embs
 
 
 def load_dataset(dsname):
@@ -56,6 +57,22 @@ def train_model(train_loader,
     y_val = y_val.to(cpu_device)
     y_test = y_test.to(cpu_device)
 
+    def run_model_maybe_pos_embs(nodes, adj_mat):
+        """Helper function for calling a model, but computing
+        the positional embeddings if the model uses them.
+        TODO: optimise this by only computing the embeddings
+        at most once.
+        """
+        if hasattr(model, 'pos_emb_dim'):
+            # compute positional embeddings for whole graph upfront
+            # (do it on the CPU - torch bug)
+            pos_embs = laplacian_pos_emb(adj_mat.to(
+                cpu_device),
+                model.pos_emb_dim).to(adj_mat.device)
+            return model(nodes, adj_mat, flip_pos_embs(pos_embs))
+        else:
+            return model(nodes, adj_mat)
+
     # set up training
     criterion = nn.CrossEntropyLoss()
 
@@ -94,7 +111,7 @@ def train_model(train_loader,
                 train_graph_pair.edge_index,
                 max_num_nodes=nodes_train.shape[0]).squeeze(dim=0)
 
-            output = model(nodes_train, adjacency_train)
+            output = run_model_maybe_pos_embs(nodes_train, adjacency_train)
             loss = criterion(output, y_train)
 
             optimiser.zero_grad()
@@ -107,11 +124,11 @@ def train_model(train_loader,
         model.eval()
         with torch.no_grad():
             # val
-            output = model(nodes_val, adjacency_val)
+            output = run_model_maybe_pos_embs(nodes_val, adjacency_val)
             output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
             val_f1 = metrics.f1_score(output_labelled, y_val, average='micro')
             # test
-            output = model(nodes_test, adjacency_test)
+            output = run_model_maybe_pos_embs(nodes_test, adjacency_test)
             output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
             test_f1 = metrics.f1_score(output_labelled, y_test, average='micro')
 
