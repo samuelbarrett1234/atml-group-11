@@ -4,6 +4,23 @@ import math
 sys.path.append(os.environ['PATH_TO_GAT'])
 from gat import (VanillaTransformer, UniversalTransformer,
                  GAT_Inductive, GAT_Transductive, GATv2)
+import torch
+
+
+def norm_laplacian(A):
+    """Compute normalised Laplacian of a Torch adjacency matrix A.
+    """
+    D = torch.diag(torch.sum(A, axis=1))
+    return torch.eye(A.shape[1], device=A.device) - D ** -0.5 @ A @ D ** -0.5
+
+
+def laplacian_pos_emb(A, pos_emb_dim):
+    """Compute `pos_emb_dim`-dimensional Laplacian positional
+    embeddings for nodes in graph with adjacency matrix A.
+    """
+    assert(pos_emb_dim < A.shape[1])
+    _, U = torch.linalg.eigh(norm_laplacian(A))
+    return U[:, 1:pos_emb_dim+1]
 
 
 def anneal_dropout(start, time, init, inc):

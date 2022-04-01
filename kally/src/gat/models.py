@@ -111,7 +111,7 @@ class GAT_Inductive(nn.Module):
 
 class VanillaTransformer(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
-                 num_layers, num_heads,
+                 num_layers, num_heads, pos_emb_dim,
                  nonlinear_internal_dim=None,
                  identity_bias=0.01,
                  dropout_att=None,
@@ -141,6 +141,9 @@ class VanillaTransformer(nn.Module):
             for in_dim, out_dim in zip(dims[:-1], dims[1:])
         ])
 
+        self.pos_emb_dim = pos_emb_dim
+        self.pos_emb_linear = nn.Linear(pos_emb_dim, input_dim)
+
     def anneal_attention_dropout(self, drop):
         """Anneals attention dropout on the transformer sublayer.
         """
@@ -158,12 +161,15 @@ class VanillaTransformer(nn.Module):
 
         adjacency_matrix: the `N x N` matrix giving the graph structure
 
+        `pos_embs`: Nx`pos_emb_dim` matrix of positional embeddings
+
         Returns:
             raw, unnormalised scores for each class, i.e. as specified 
             here `https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html`
             to be used in a CrossEntropyLoss
     """
-    def forward(self, node_matrix, adj_matrix):
+    def forward(self, node_matrix, adj_matrix, pos_embs):
+        node_matrix = node_matrix + self.pos_emb_linear(pos_embs)
         if not self.skip_conn:
             for L in self.layers:
                 node_matrix = L(node_matrix, adj_matrix)
@@ -177,7 +183,7 @@ class VanillaTransformer(nn.Module):
 
 class UniversalTransformer(nn.Module):
     def __init__(self, input_dim, num_classes, internal_dim,
-                 num_layers, num_heads,
+                 num_layers, num_heads, pos_emb_dim,
                  nonlinear_internal_dim=None,
                  identity_bias=0.01,
                  dropout_att=None,
@@ -207,6 +213,9 @@ class UniversalTransformer(nn.Module):
         self.post = nn.Linear(internal_dim, num_classes)
         self.num_layers = num_layers
 
+        self.pos_emb_dim = pos_emb_dim
+        self.pos_emb_linear = nn.Linear(pos_emb_dim, input_dim)
+
     def anneal_attention_dropout(self, drop):
         """Anneals attention dropout on the transformer sublayer.
         """
@@ -222,12 +231,15 @@ class UniversalTransformer(nn.Module):
 
         adjacency_matrix: the `N x N` matrix giving the graph structure
 
+        `pos_embs`: Nx`pos_emb_dim` matrix of positional embeddings
+
         Returns:
             raw, unnormalised scores for each class, i.e. as specified 
             here `https://pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html`
             to be used in a CrossEntropyLoss
     """
-    def forward(self, node_matrix, adj_matrix):
+    def forward(self, node_matrix, adj_matrix, pos_embs):
+        node_matrix = node_matrix + self.pos_emb_linear(pos_embs)
         node_matrix = self.pre(node_matrix)
         for _ in range(self.num_layers):
             next_matrix = self.transformer(node_matrix, adj_matrix)

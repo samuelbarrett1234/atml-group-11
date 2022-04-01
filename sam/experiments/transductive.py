@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim 
 import torch_geometric as tg
+from experiments.utils import laplacian_pos_emb
 
 
 def load_dataset(dsname):
@@ -55,6 +56,13 @@ def train_model(nodes, labels, adjacency_matrix,
     else:
         sched = None
 
+    if hasattr(model, 'pos_emb_dim'):
+        # compute positional embeddings for whole graph upfront
+        # (do it on the CPU - torch bug)
+        pos_embs = laplacian_pos_emb(adjacency_matrix.to(
+            torch.device('cpu')),
+            model.pos_emb_dim).to(adjacency_matrix.device)
+
     # begin training
     for epoch in range(train_cfgs["max_epoch"]):
         # if annealing dropout, update it
@@ -71,7 +79,10 @@ def train_model(nodes, labels, adjacency_matrix,
 
         # train model for one step
         model.train()
-        output = model(nodes, adjacency_matrix)
+        if hasattr(model, 'pos_emb_dim'):
+            output = model(nodes, adjacency_matrix, pos_embs)
+        else:
+            output = model(nodes, adjacency_matrix)
         loss = criterion(output[train_mask], labels[train_mask])
         
         optimiser.zero_grad()
@@ -83,7 +94,10 @@ def train_model(nodes, labels, adjacency_matrix,
         # compute validation and testing accuracies
         model.eval()
         with torch.no_grad():
-            output = model(nodes, adjacency_matrix)
+            if hasattr(model, 'pos_emb_dim'):
+                output = model(nodes, adjacency_matrix, pos_embs)
+            else:
+                output = model(nodes, adjacency_matrix)
             val_acc = (output[val_mask].argmax(dim=1) ==
                 labels[val_mask]).sum().item() / val_mask.sum().item()
             test_acc = (output[test_mask].argmax(dim=1) ==
