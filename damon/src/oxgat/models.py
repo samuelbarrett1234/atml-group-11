@@ -142,17 +142,21 @@ class TransductiveGATModel(_BaseGATModel):
                  pubmed: bool = False, sparse: bool = True):
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=8,
-                                               num_heads=8,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=64,
-                                               out_features=num_classes,
-                                               num_heads=8 if pubmed else 1,
-                                               is_final_layer=True,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=8,
+            num_heads=8,
+            attention_dropout=0.6,
+            sparse=sparse)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=64,
+            out_features=num_classes,
+            num_heads=8 if pubmed else 1,
+            is_final_layer=True,
+            attention_dropout=0.6,
+            sparse=sparse)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -175,7 +179,7 @@ class TransductiveGATModel(_BaseGATModel):
         self.log("val_loss", loss)
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
-        acc = int(correct) / int(data.test_mask.sum())
+        acc = int(correct) / int(data.val_mask.sum())
         self.log("val_acc", acc)
 
     def test_step(self, data, batch_idx):
@@ -200,19 +204,25 @@ class InductiveGATModel(_BaseGATModel):
     """
     def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
         super().__init__(lr=0.005, train_batch_size=2)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=1024,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_3 = components.GATLayer(in_features=1024,
-                                               out_features=num_classes,
-                                               num_heads=6,
-                                               is_final_layer=True,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=256,
+            num_heads=4,
+            sparse=sparse)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=256,
+            num_heads=4,
+            sparse=sparse)
+        self.gat_layer_3 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=num_classes,
+            num_heads=6,
+            is_final_layer=True,
+            sparse=sparse)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -248,15 +258,17 @@ class TransductiveGATModelWithDegrees(TransductiveGATModel):
     def __init__(self, in_features: int, num_classes: int, max_degree: int,
                  pubmed: bool = False, sparse: bool = True):
         _BaseGATModel.__init__(self, lr=0.01 if pubmed else 0.005,
-                         regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.GATLayerWithDegrees(
+                               regularisation=0.001 if pubmed else 0.0005)
+        self.gat_layer_1 = components.MultiHeadAttentionLayerWithDegrees(
+            attention_type=components.GATAttentionHead,
             max_degree=max_degree,
             in_features=in_features,
             out_features=8,
             num_heads=8,
             attention_dropout=0.6,
             sparse=sparse)
-        self.gat_layer_2 = components.GATLayerWithDegrees(
+        self.gat_layer_2 = components.MultiHeadAttentionLayerWithDegrees(
+            attention_type=components.GATAttentionHead,
             max_degree=max_degree,
             in_features=64,
             out_features=num_classes,
@@ -264,3 +276,28 @@ class TransductiveGATModelWithDegrees(TransductiveGATModel):
             is_final_layer=True,
             attention_dropout=0.6,
             sparse=sparse)
+
+
+class TransductiveGATv2Model(TransductiveGATModel):
+    def __init__(self, in_features: int, num_classes: int, 
+                 pubmed: bool = False, separate_weights: bool = True,
+                 bias: bool = False):
+        _BaseGATModel.__init__(self, lr=0.01 if pubmed else 0.005,
+                               regularisation=0.001 if pubmed else 0.0005)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATv2AttentionHead,
+            in_features=in_features,
+            out_features=8,
+            num_heads=8,
+            attention_dropout=0.6,
+            separate_weights=separate_weights,
+            bias=bias)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATv2AttentionHead,
+            in_features=64,
+            out_features=num_classes,
+            num_heads=8 if pubmed else 1,
+            is_final_layer=True,
+            attention_dropout=0.6,
+            separate_weights=separate_weights,
+            bias=bias)
