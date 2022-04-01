@@ -123,26 +123,27 @@ class VanillaTransformer(nn.Module):
         assert(key_dim > 0)
         self.skip_conn = skip_conn
 
-        # sequence of node vector dimensions:
-        dims = [input_dim] + [internal_dim] * (num_layers - 1) + [num_classes]
-
         # default to a multiple of the internal dim
         if nonlinear_internal_dim is None:
             nonlinear_internal_dim = 2 * internal_dim
+            
+        self.pre = nn.Linear(input_dim, internal_dim, bias=False)
+        self.post = nn.Linear(internal_dim, num_classes)
 
         # construct transformer layers based on this sequence of dimensions:
         self.layers = nn.ModuleList([
-            Layer_VanillaTransformer(input_dim=in_dim, out_dim=out_dim, n_heads=num_heads,
+            Layer_VanillaTransformer(input_dim=internal_dim, out_dim=internal_dim,
+                                     n_heads=num_heads,
                                      key_dim=key_dim,
                                      hidden_dim=nonlinear_internal_dim,
                                      dropout_att=dropout_att,
                                      dropout_hidden=dropout_hidden,
                                      identity_bias=identity_bias)
-            for in_dim, out_dim in zip(dims[:-1], dims[1:])
+            for _ in range(num_layers)
         ])
 
         self.pos_emb_dim = pos_emb_dim
-        self.pos_emb_linear = nn.Linear(pos_emb_dim, input_dim)
+        self.pos_emb_linear = nn.Linear(pos_emb_dim, internal_dim)
 
     def anneal_attention_dropout(self, drop):
         """Anneals attention dropout on the transformer sublayer.
@@ -169,16 +170,17 @@ class VanillaTransformer(nn.Module):
             to be used in a CrossEntropyLoss
     """
     def forward(self, node_matrix, adj_matrix, pos_embs):
+        node_matrix = self.pre(node_matrix)
         node_matrix = node_matrix + self.pos_emb_linear(pos_embs)
         if not self.skip_conn:
             for L in self.layers:
                 node_matrix = L(node_matrix, adj_matrix)
-            return node_matrix
         else:
             node_matrix = self.layers[0](node_matrix, adj_matrix)
             for L in self.layers[1:-1]:
                 node_matrix = node_matrix + L(node_matrix, adj_matrix)
-            return self.layers[-1](node_matrix, adj_matrix)
+            node_matrix = self.layers[-1](node_matrix, adj_matrix)
+        return self.post(node_matrix)
 
 
 class UniversalTransformer(nn.Module):
@@ -214,7 +216,7 @@ class UniversalTransformer(nn.Module):
         self.num_layers = num_layers
 
         self.pos_emb_dim = pos_emb_dim
-        self.pos_emb_linear = nn.Linear(pos_emb_dim, input_dim)
+        self.pos_emb_linear = nn.Linear(pos_emb_dim, internal_dim)
 
     def anneal_attention_dropout(self, drop):
         """Anneals attention dropout on the transformer sublayer.
@@ -239,8 +241,8 @@ class UniversalTransformer(nn.Module):
             to be used in a CrossEntropyLoss
     """
     def forward(self, node_matrix, adj_matrix, pos_embs):
-        node_matrix = node_matrix + self.pos_emb_linear(pos_embs)
         node_matrix = self.pre(node_matrix)
+        node_matrix = node_matrix + self.pos_emb_linear(pos_embs)
         for _ in range(self.num_layers):
             next_matrix = self.transformer(node_matrix, adj_matrix)
             if not self.skip_conn:
