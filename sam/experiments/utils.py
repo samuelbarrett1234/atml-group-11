@@ -10,8 +10,8 @@ import torch
 def norm_laplacian(A):
     """Compute normalised Laplacian of a Torch adjacency matrix A.
     """
-    D = torch.diag(torch.sum(A, axis=1))
-    return torch.eye(A.shape[1], device=A.device) - D ** -0.5 @ A @ D ** -0.5
+    D_invsq = torch.diag(torch.sum(A, axis=1) ** -0.5)
+    return torch.eye(A.shape[1], device=A.device) - D_invsq @ A @ D_invsq
 
 
 def laplacian_pos_emb(A, pos_emb_dim):
