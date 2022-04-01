@@ -21,7 +21,8 @@
         "num_layers" : 8,
         "num_heads" : 8,
         "skip_conn" : true,
-        "identity_bias" : [0.0, 0.02],
+        "identity_bias" : 0.0,
+        "pos_emb_dim" : [32, 64, 128],
         "dropout_att" : 0.2,
         "dropout_hidden" : 0.3
     }
