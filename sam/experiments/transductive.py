@@ -9,7 +9,8 @@ def load_dataset(dsname):
     Returns a big tuple of values.
     """
     if dsname == 'cora':
-        dataset = tg.datasets.Planetoid(root='data', name='Cora', split='full')
+        dataset = tg.datasets.Planetoid(root='data', name='Cora', split='public',
+                                        transform=tg.transforms.NormalizeFeatures())
         cora_dataloader = tg.loader.DataLoader(dataset)
         cora_graph = next(iter(cora_dataloader))
 
