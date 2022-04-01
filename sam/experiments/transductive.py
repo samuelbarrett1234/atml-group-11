@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim 
 import torch_geometric as tg
-from experiments.utils import laplacian_pos_emb
+from experiments.utils import laplacian_pos_emb, flip_pos_embs
 
 
 def load_dataset(dsname):
@@ -80,7 +80,7 @@ def train_model(nodes, labels, adjacency_matrix,
         # train model for one step
         model.train()
         if hasattr(model, 'pos_emb_dim'):
-            output = model(nodes, adjacency_matrix, pos_embs)
+            output = model(nodes, adjacency_matrix, flip_pos_embs(pos_embs))
         else:
             output = model(nodes, adjacency_matrix)
         loss = criterion(output[train_mask], labels[train_mask])
@@ -95,7 +95,7 @@ def train_model(nodes, labels, adjacency_matrix,
         model.eval()
         with torch.no_grad():
             if hasattr(model, 'pos_emb_dim'):
-                output = model(nodes, adjacency_matrix, pos_embs)
+                output = model(nodes, adjacency_matrix, flip_pos_embs(pos_embs))
             else:
                 output = model(nodes, adjacency_matrix)
             val_acc = (output[val_mask].argmax(dim=1) ==

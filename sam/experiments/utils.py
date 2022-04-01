@@ -23,6 +23,16 @@ def laplacian_pos_emb(A, pos_emb_dim):
     return U[:, 1:pos_emb_dim+1]
 
 
+def flip_pos_embs(U):
+    """Randomly flip the sign of each positional embedding in the given
+    matrix `U`. This is required because the eigenvectors are only
+    defined UP TO the sign. Hence the model needs to learn this invariance.
+    """
+    flips = torch.bernoulli(0.5 * torch.ones((U.shape[0],))).to(U.device)
+    flips = 2 * flips - 1
+    return U * torch.unsqueeze(flips, 1)
+
+
 def anneal_dropout(start, time, init, inc):
     """Compute the value of dropout, if you are starting
     at epoch `start`, you want the dropout to increase
