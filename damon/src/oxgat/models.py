@@ -79,6 +79,7 @@ class _BaseGATModel(AbstractModel):
         self.regularisation = regularisation
         self.train_batch_size = train_batch_size
         self.trainer = None
+        self.checkpointing: utils.MultipleModelCheckpoint = None
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(),
@@ -112,23 +113,17 @@ class _BaseGATModel(AbstractModel):
     def _init_trainer(self, use_gpu):
         # Stop training only if neither validation loss nor accuracy has
         # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
         early_stopping = utils.MultipleEarlyStopping(
             monitors=["val_acc","val_loss"],
             modes=["max","min"],
             patience=100,
             verbose=False
         )
-        checkpointing = utils.MultipleModelCheckpoint(
-            monitor=["val_acc","val_loss"],
-            modes=["max","min"],
-            save_weights_only="true",
-            filename="best_model.ckpt"
-        )
-        progress_bar = pl.callbacks.RichProgressBar()
         trainer_args = {"max_epochs": 100000,
                         "log_every_n_steps": 1,
                         "callbacks": [early_stopping,
-                                      checkpointing,
+                                      self.checkpointing,
                                       progress_bar]}
         if use_gpu:
             trainer_args["gpus"] = 1
@@ -146,30 +141,53 @@ class TransductiveGATModel(_BaseGATModel):
     num_classes : int
         The number of classes for node classification.
     pubmed : bool, optional
-        Whether to apply the architecture changes made for the PubMed dataset
-        in the original paper. Defaults to False.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False.
+    citeseer : bool, optional
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False. Mutually exclusive
+        with `pubmed`.
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     """
+    LAYER_TYPE = components.MultiHeadAttentionLayer
+    ATTENTION_TYPE = components.GATAttentionHead
+
     def __init__(self, in_features: int, num_classes: int,
-                 pubmed: bool = False, sparse: bool = True):
+                 pubmed: bool = False, citeseer: bool = False,
+                 **kwargs):
+        assert not (pubmed and citeseer)
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATAttentionHead,
+        self.gat_layer_1 = self.LAYER_TYPE(
+            attention_type=self.ATTENTION_TYPE,
             in_features=in_features,
             out_features=8,
             num_heads=8,
             attention_dropout=0.6,
-            sparse=sparse)
-        self.gat_layer_2 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATAttentionHead,
+            **kwargs)
+        self.gat_layer_2 = self.LAYER_TYPE(
+            attention_type=self.ATTENTION_TYPE,
             in_features=64,
             out_features=num_classes,
             num_heads=8 if pubmed else 1,
             is_final_layer=True,
             attention_dropout=0.6,
-            sparse=sparse)
+            **kwargs)
+        if citeseer:
+            self.checkpointing = utils.MultipleModelCheckpoint(
+                monitor=["val_acc"],
+                modes=["max"],
+                save_weights_only="true",
+                filename="best_model.ckpt"
+            )
+        else: # PubMed or Cora
+            self.checkpointing = utils.MultipleModelCheckpoint(
+                monitor=["val_loss"], # Included acc in original paper for Cora
+                modes=["min"],
+                save_weights_only="true",
+                filename="best_model.ckpt"
+            )
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -212,30 +230,39 @@ class InductiveGATModel(_BaseGATModel):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     """
-    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
+    LAYER_TYPE = components.MultiHeadAttentionLayer
+    ATTENTION_TYPE = components.GATAttentionHead
+
+    def __init__(self, in_features: int, num_classes: int, **kwargs):
         super().__init__(lr=0.005, train_batch_size=2)
-        self.gat_layer_1 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATAttentionHead,
+        self.gat_layer_1 = self.LAYER_TYPE(
+            attention_type=self.ATTENTION_TYPE,
             in_features=in_features,
             out_features=256,
             num_heads=4,
-            sparse=sparse)
-        self.gat_layer_2 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATAttentionHead,
+            **kwargs)
+        self.gat_layer_2 = self.LAYER_TYPE(
+            attention_type=self.ATTENTION_TYPE,
             in_features=1024,
             out_features=256,
             num_heads=4,
-            sparse=sparse)
-        self.gat_layer_3 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATAttentionHead,
+            **kwargs)
+        self.gat_layer_3 = self.LAYER_TYPE(
+            attention_type=self.ATTENTION_TYPE,
             in_features=1024,
             out_features=num_classes,
             num_heads=6,
             is_final_layer=True,
-            sparse=sparse)
+            **kwargs)
+        self.checkpointing = utils.MultipleModelCheckpoint(
+                monitor=["val_loss"],
+                modes=["min"],
+                save_weights_only="true",
+                filename="best_model.ckpt"
+            )
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -267,50 +294,9 @@ class InductiveGATModel(_BaseGATModel):
         self.log("test_acc", acc)
 
 
-class TransductiveGATModelWithDegrees(TransductiveGATModel):
-    def __init__(self, in_features: int, num_classes: int, max_degree: int,
-                 pubmed: bool = False, sparse: bool = True):
-        _BaseGATModel.__init__(self, lr=0.01 if pubmed else 0.005,
-                               regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.MultiHeadAttentionLayerWithDegrees(
-            attention_type=components.GATAttentionHead,
-            max_degree=max_degree,
-            in_features=in_features,
-            out_features=8,
-            num_heads=8,
-            attention_dropout=0.6,
-            sparse=sparse)
-        self.gat_layer_2 = components.MultiHeadAttentionLayerWithDegrees(
-            attention_type=components.GATAttentionHead,
-            max_degree=max_degree,
-            in_features=64,
-            out_features=num_classes,
-            num_heads=8 if pubmed else 1,
-            is_final_layer=True,
-            attention_dropout=0.6,
-            sparse=sparse)
-
-
 class TransductiveGATv2Model(TransductiveGATModel):
-    def __init__(self, in_features: int, num_classes: int, 
-                 pubmed: bool = False, separate_weights: bool = True,
-                 bias: bool = False):
-        _BaseGATModel.__init__(self, lr=0.01 if pubmed else 0.005,
-                               regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATv2AttentionHead,
-            in_features=in_features,
-            out_features=8,
-            num_heads=8,
-            attention_dropout=0.6,
-            separate_weights=separate_weights,
-            bias=bias)
-        self.gat_layer_2 = components.MultiHeadAttentionLayer(
-            attention_type=components.GATv2AttentionHead,
-            in_features=64,
-            out_features=num_classes,
-            num_heads=8 if pubmed else 1,
-            is_final_layer=True,
-            attention_dropout=0.6,
-            separate_weights=separate_weights,
-            bias=bias)
+    ATTENTION_TYPE = components.GATv2AttentionHead
+
+
+class TransductiveGATModelWithDegrees(TransductiveGATModel):
+    LAYER_TYPE = components.MultiHeadAttentionLayerWithDegrees
