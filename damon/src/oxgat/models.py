@@ -97,6 +97,9 @@ class _BaseGATModel(AbstractModel):
                                                          shuffle=True)
         val_loader = torch_geometric.loader.DataLoader(val_dataset)
         self.trainer.fit(self, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path="best_model.ckpt")
 
     def standard_test(self, dataset):
         """Method to test this model after having run `self.standard_train()`.
@@ -115,11 +118,21 @@ class _BaseGATModel(AbstractModel):
             patience=100,
             verbose=False
         )
+        checkpointing = utils.MultipleModelCheckpoint(
+            monitor=["val_acc","val_loss"],
+            modes=["max","min"],
+            save_weights_only="true",
+            filename="best_model.ckpt"
+        )
+        progress_bar = pl.callbacks.RichProgressBar()
         trainer_args = {"max_epochs": 100000,
                         "log_every_n_steps": 1,
-                        "callbacks": [early_stopping]}
+                        "callbacks": [early_stopping,
+                                      checkpointing,
+                                      progress_bar]}
         if use_gpu:
             trainer_args["gpus"] = 1
+        self.trainer_args = trainer_args
         self.trainer = pl.Trainer(**trainer_args)
 
 
