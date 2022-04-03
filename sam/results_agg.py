@@ -46,4 +46,4 @@ if __name__ == "__main__":
         print("The bests found were:")
         for tag, values in best_for_tag.items():
             print("-----------------------")
-            print(f"Tag '{tag}' achieved validation accuracy {values[0]} and test accuracy {values[3]} using configuration {values[2]}")
+            print(f"Tag '{tag}' achieved validation score {values[0]} and test score {values[3]} using configuration {values[2]}")
