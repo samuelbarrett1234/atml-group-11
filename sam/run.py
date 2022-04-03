@@ -1,11 +1,11 @@
 import os
-import sys
 import csv
 import glob
 import json
 import argparse as ap
 from functools import partial
 import torch
+import torch.multiprocessing
 from tqdm import tqdm
 import experiments
 
@@ -200,7 +200,7 @@ class MultipleExperimentRunner:
                 return next(self.iterable)
 
 
-def load_experiments(config_filenames):
+def load_experiments(config_filenames, device, dataset):
     for fname in config_filenames:
         # place log and saved model next to config
         base = os.path.splitext(fname)[0]
@@ -211,9 +211,41 @@ def load_experiments(config_filenames):
             cfg = json.load(cfg_f)
 
         yield Experiment(
-            device, args.dataset, cfg, log_fname, model_fname,
-            *EXPERIMENT_CLASS[args.dataset]
+            device, dataset, cfg, log_fname, model_fname,
+            *EXPERIMENT_CLASS[dataset]
         )
+
+
+def run(i, args):
+    # device `i + 1` will run on configs in range
+    # [ config_step * i, config_step * (i + 1) )
+    # and device 0 will run on the remainder
+    config_step = len(args.config) // len(args.device)
+
+    # determine device and configs for this run process
+    device = torch.device(args.device[i])
+    if i > 0:
+            args.config = args.config[
+                config_step * (i - 1) : config_step * i
+            ]
+    else:
+        args.config = args.config[config_step * (len(args.device) - 1):]
+
+    if not args.quiet:
+        print("Running on", len(args.config), "config files...")
+
+    if len(args.config) == 0:
+        print("Warning: worker", i, "was assigned no jobs.")
+        return None
+
+    # load experiments, then pass them to the MultipleExperimentRunner
+    runner = MultipleExperimentRunner(load_experiments(args.config, device, args.dataset))
+    if not args.quiet:
+        runner = tqdm(runner)
+    # iterate through the runner to run all of the experiments
+    for _ in runner:
+        pass
+    # done!
 
 
 if __name__ == "__main__":
@@ -224,7 +256,7 @@ if __name__ == "__main__":
                         help="Path to config file. Can supply many configs.")
     parser.add_argument("--quiet", action="store_true",
                         help="Set this to produce no output.")
-    parser.add_argument("--device", type=str, default='cpu',
+    parser.add_argument("--device", type=str, action='append',
                         help="Set torch device, e.g. cuda:0 or cpu.")
     args = parser.parse_args()
 
@@ -245,16 +277,11 @@ if __name__ == "__main__":
         print("Error: No config files detected.")
         exit(1)
 
-    device = torch.device(args.device)
+    if args.device is None:
+        args.device = ['cpu']  # default device
 
-    if not args.quiet:
-        print("Running on", len(args.config), "config files...")
-
-    # load experiments, then pass them to the MultipleExperimentRunner
-    runner = MultipleExperimentRunner(load_experiments(args.config))
-    if not args.quiet:
-        runner = tqdm(runner)
-    # iterate through the runner to run all of the experiments
-    for _ in runner:
-        pass
-    # done!
+    # for multiple devices, parallelise across them
+    if len(args.device) > 1:
+        torch.multiprocessing.spawn(run, (args,), nprocs=len(args.device))
+    else:
+        run(0, args)

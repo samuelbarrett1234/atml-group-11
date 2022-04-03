@@ -15,7 +15,7 @@ def load_dataset(dsname):
         val_dataset = tg.datasets.PPI(root='data', split='val')
         test_dataset = tg.datasets.PPI(root='data', split='test')
 
-        train_loader = tg.loader.DataLoader(train_dataset, batch_size=2, shuffle=True)
+        train_loader = tg.loader.DataLoader(train_dataset, batch_size=1, shuffle=True)
         val_loader = tg.loader.DataLoader(val_dataset, batch_size=2)
         test_loader = tg.loader.DataLoader(test_dataset, batch_size=2)
 
@@ -25,11 +25,13 @@ def load_dataset(dsname):
 
         nodes_val = val_graph_pair.x
         y_val = val_graph_pair.y
-        adjacency_val = tg.utils.to_dense_adj(val_graph_pair.edge_index).squeeze(dim=0)
+        adjacency_val = tg.utils.to_dense_adj(
+            val_graph_pair.edge_index, max_num_nodes=len(nodes_val)).squeeze(dim=0)
 
         nodes_test = test_graph_pair.x
         y_test = test_graph_pair.y
-        adjacency_test = tg.utils.to_dense_adj(test_graph_pair.edge_index).squeeze(dim=0)
+        adjacency_test = tg.utils.to_dense_adj(
+            test_graph_pair.edge_index, max_num_nodes=len(nodes_test)).squeeze(dim=0)
 
         # 50: input dimension; 121: number of classes
         return (50, 121, train_loader,
@@ -74,7 +76,7 @@ def train_model(train_loader,
             return model(nodes, adj_mat)
 
     # set up training
-    criterion = nn.CrossEntropyLoss()
+    criterion = nn.BCEWithLogitsLoss()
 
     optimiser = optim.Adam(
         model.parameters(), 
