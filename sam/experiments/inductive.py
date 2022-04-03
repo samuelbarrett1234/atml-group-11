@@ -127,11 +127,11 @@ def train_model(train_loader,
         with torch.no_grad():
             # val
             output = run_model_maybe_pos_embs(nodes_val, adjacency_val)
-            output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
+            output_labelled = torch.where(output > 0.0, 1.0, 0.0).to(cpu_device)
             val_f1 = metrics.f1_score(output_labelled, y_val, average='micro')
             # test
             output = run_model_maybe_pos_embs(nodes_test, adjacency_test)
-            output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
+            output_labelled = torch.where(output > 0.0, 1.0, 0.0).to(cpu_device)
             test_f1 = metrics.f1_score(output_labelled, y_test, average='micro')
 
         yield (epoch, float(loss), float(val_f1),
