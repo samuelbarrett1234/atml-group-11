@@ -9,6 +9,7 @@ from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 import torch_geometric.loader
+from typing import Type, Union, List
 
 from . import components, utils
 
@@ -93,11 +94,13 @@ class _BaseGATModel(AbstractModel):
         self._init_trainer(use_gpu)
         if val_dataset is None:
             val_dataset = train_dataset
-        train_loader = torch_geometric.loader.DataLoader(train_dataset,
-                                                         batch_size=self.train_batch_size,
-                                                         shuffle=True)
+        train_loader = torch_geometric.loader.DataLoader(
+            train_dataset,
+            batch_size=self.train_batch_size,
+            shuffle=True)
         val_loader = torch_geometric.loader.DataLoader(val_dataset)
-        self.trainer.fit(self, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        self.trainer.fit(self, train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
         # Restore best weights and validate
         self.trainer = pl.Trainer(**self.trainer_args)
         self.trainer.validate(self, val_loader, ckpt_path="best_model.ckpt")
@@ -150,24 +153,21 @@ class TransductiveGATModel(_BaseGATModel):
     **kwargs
         Keyword arguments to be supplied to the attention layers.
     """
-    LAYER_TYPE = components.MultiHeadAttentionLayer
-    ATTENTION_TYPE = components.GATAttentionHead
-
     def __init__(self, in_features: int, num_classes: int,
                  pubmed: bool = False, citeseer: bool = False,
                  **kwargs):
         assert not (pubmed and citeseer)
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = self.LAYER_TYPE(
-            attention_type=self.ATTENTION_TYPE,
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
             in_features=in_features,
             out_features=8,
             num_heads=8,
             attention_dropout=0.6,
             **kwargs)
-        self.gat_layer_2 = self.LAYER_TYPE(
-            attention_type=self.ATTENTION_TYPE,
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
             in_features=64,
             out_features=num_classes,
             num_heads=8 if pubmed else 1,
@@ -198,27 +198,7 @@ class TransductiveGATModel(_BaseGATModel):
         x = self.gat_layer_2(x, edge_index)
         return F.log_softmax(x, dim=1)
 
-    def training_step(self, data, batch_idx):
-        out = self(data)
-        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-        self.log("train_loss", loss)
-        return loss
-
-    def validation_step(self, data, batch_idx):
-        out = self(data)
-        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
-        self.log("val_loss", loss)
-        pred = out.argmax(dim=1)
-        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
-        acc = int(correct) / int(data.val_mask.sum())
-        self.log("val_acc", acc)
-
-    def test_step(self, data, batch_idx):
-        out = self(data)
-        pred = out.argmax(dim=1)
-        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
-        acc = int(correct) / int(data.test_mask.sum())
-        self.log("test_acc", acc)
+    
 
 
 class InductiveGATModel(_BaseGATModel):
@@ -233,25 +213,22 @@ class InductiveGATModel(_BaseGATModel):
     **kwargs
         Keyword arguments to be supplied to the attention layers.
     """
-    LAYER_TYPE = components.MultiHeadAttentionLayer
-    ATTENTION_TYPE = components.GATAttentionHead
-
     def __init__(self, in_features: int, num_classes: int, **kwargs):
         super().__init__(lr=0.005, train_batch_size=2)
-        self.gat_layer_1 = self.LAYER_TYPE(
-            attention_type=self.ATTENTION_TYPE,
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
             in_features=in_features,
             out_features=256,
             num_heads=4,
             **kwargs)
-        self.gat_layer_2 = self.LAYER_TYPE(
-            attention_type=self.ATTENTION_TYPE,
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
             in_features=1024,
             out_features=256,
             num_heads=4,
             **kwargs)
-        self.gat_layer_3 = self.LAYER_TYPE(
-            attention_type=self.ATTENTION_TYPE,
+        self.gat_layer_3 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
             in_features=1024,
             out_features=num_classes,
             num_heads=6,
@@ -294,9 +271,136 @@ class InductiveGATModel(_BaseGATModel):
         self.log("test_acc", acc)
 
 
-class TransductiveGATv2Model(TransductiveGATModel):
-    ATTENTION_TYPE = components.GATv2AttentionHead
+class CustomTransductiveModel(AbstractModel):
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = "loss",
+            sampling: bool = False,
+            sampling_neighbors: int = 30,
+            sampling_batch_size: int = 128,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*(num_layers-1)
+        assert len(heads_per_layer) == num_layers
+        assert len(hidden_feature_dims) == num_layers-1
+        assert sampling in ["none", "neighbor", "saint"]
+        assert restore_best in ["loss", "acc"]
 
+        self.layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=(num_classes if i==num_layers-1
+                                     else hidden_feature_dims[i]),
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_layers)])
 
-class TransductiveGATModelWithDegrees(TransductiveGATModel):
-    LAYER_TYPE = components.MultiHeadAttentionLayerWithDegrees
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f"val_{restore_best}",
+            mode=("min" if restore_best=="loss" else "max"),
+            save_weights_only=True)
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.sampling = sampling
+        self.sampling_neighbors = sampling_neighbors
+        self.sampling_batch_size = sampling_batch_size
+        self.dropout=dropout
+
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        for i, layer in enumerate(self.layers):
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            if i < len(self.layers)-1:
+                x = F.elu(x)
+        return F.log_softmax(x, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
+        self.log("val_loss", loss)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
+        acc = int(correct) / int(data.val_mask.sum())
+        self.log("val_acc", acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log("test_acc", acc)
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, dataset, use_gpu=False):
+        """Automated training of this model."
+        """
+        self._init_trainer(use_gpu)
+        assert len(dataset) == 1
+        train_loader = (torch_geometric.loader.NeighborLoader(
+                            dataset[0],
+                            num_neighbors=[self.sampling_neighbors]*len(self.layers),
+                            batch_size=self.sampling_batch_size) 
+                        if self.sampling else torch_geometric.loader.DataLoader(dataset))
+        val_loader = torch_geometric.loader.DataLoader(dataset)
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path="best")
+
+    def standard_test(self, dataset):
+        """Method to test this model after having run `self.standard_train()`.
+        """
+        assert self.trainer is not None, "Must run `self.standard_train()` first."
+        dataloader = torch_geometric.loader.DataLoader(dataset) #  TODO: sampling on val/test
+        self.trainer.test(self, dataloader)
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=["val_acc","val_loss"],
+            modes=["max","min"],
+            patience=100,
+            verbose=False
+        )
+        trainer_args = {"max_epochs": 100000,
+                        "log_every_n_steps": 1,
+                        "callbacks": [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args["gpus"] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)
