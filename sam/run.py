@@ -40,6 +40,9 @@ def move_to_device(device, x):
     elif isinstance(x, tuple):
         return tuple(map(partial(move_to_device, device), x))
 
+    elif isinstance(x, list):
+        return list(map(partial(move_to_device, device), x))
+
     elif isinstance(x, torch.utils.data.DataLoader):
         # automatically transfer data to the right device as it is yielded
         # from the data loader

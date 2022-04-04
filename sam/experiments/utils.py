@@ -17,15 +17,15 @@ def norm_laplacian(A):
     return torch.eye(A.shape[1], device=A.device) - D_invsq @ A @ D_invsq
 
 
-def laplacian_pos_emb(A, pos_emb_dim):
-    """Compute `pos_emb_dim`-dimensional Laplacian positional
-    embeddings for nodes in graph with adjacency matrix A.
+def laplacian_pos_emb(A):
+    """Compute Laplacian positional embeddings for nodes in graph
+    with adjacency matrix A. Returns a matrix which is NxK, where
+    N is the number of nodes and K is an arbitrary (!) integer less
+    than or equal to N.
     """
     eigvals, U = torch.linalg.eigh(norm_laplacian(A))
     start_idx = torch.searchsorted(eigvals, 1.0e-6)
-    start_idx = min(int(start_idx), A.shape[1] - pos_emb_dim)  # safeguard
-    assert(start_idx + pos_emb_dim <= A.shape[1])
-    return U[:, start_idx:pos_emb_dim + start_idx]
+    return U[:, start_idx:]
 
 
 def flip_pos_embs(U):

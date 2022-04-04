@@ -33,8 +33,18 @@ def load_dataset(dsname):
         adjacency_test = tg.utils.to_dense_adj(
             test_graph_pair.edge_index, max_num_nodes=len(nodes_test)).squeeze(dim=0)
 
+        train_ds = [
+            (train_row.x, train_row.y, train_row.edge_index,
+             laplacian_pos_emb(
+                tg.utils.to_dense_adj(
+                    train_row.edge_index,
+                    max_num_nodes=train_row.x.shape[0]).squeeze(dim=0)
+            ))
+            for train_row in train_loader
+        ]
+
         # 50: input dimension; 121: number of classes
-        return (50, 121, train_loader,
+        return (50, 121, train_ds,
             nodes_val, y_val, adjacency_val,
             nodes_test, y_test, adjacency_test)
 
@@ -59,19 +69,13 @@ def train_model(train_loader,
     y_val = y_val.to(cpu_device)
     y_test = y_test.to(cpu_device)
 
-    def run_model_maybe_pos_embs(nodes, adj_mat):
+    def run_model_maybe_pos_embs(nodes, adj_mat, pos_embs):
         """Helper function for calling a model, but computing
         the positional embeddings if the model uses them.
-        TODO: optimise this by only computing the embeddings
-        at most once.
         """
         if hasattr(model, 'pos_emb_dim'):
-            # compute positional embeddings for whole graph upfront
-            # (do it on the CPU - torch bug)
-            pos_embs = laplacian_pos_emb(adj_mat.to(
-                cpu_device),
-                model.pos_emb_dim).to(adj_mat.device)
-            output = model(nodes, adj_mat, flip_pos_embs(pos_embs))
+            assert(pos_embs.shape[1] >= model.pos_emb_dim)
+            output = model(nodes, adj_mat, flip_pos_embs(pos_embs[:, :model.pos_emb_dim]))
         else:
             output = model(nodes, adj_mat)
         return torch.sigmoid(output)
@@ -107,14 +111,12 @@ def train_model(train_loader,
 
         # train model for one epoch
         model.train()
-        for train_graph_pair in train_loader:
-            nodes_train = train_graph_pair.x
-            y_train = train_graph_pair.y
+        for nodes_train, y_train, edge_index, pos_embs in train_loader:
             adjacency_train = tg.utils.to_dense_adj(
-                train_graph_pair.edge_index,
+                edge_index,
                 max_num_nodes=nodes_train.shape[0]).squeeze(dim=0)
 
-            output = run_model_maybe_pos_embs(nodes_train, adjacency_train)
+            output = run_model_maybe_pos_embs(nodes_train, adjacency_train, pos_embs)
             loss = criterion(output, y_train)
 
             optimiser.zero_grad()
@@ -127,11 +129,15 @@ def train_model(train_loader,
         model.eval()
         with torch.no_grad():
             # val
-            output = run_model_maybe_pos_embs(nodes_val, adjacency_val)
+            output = run_model_maybe_pos_embs(nodes_val, adjacency_val, laplacian_pos_emb(
+                adjacency_val
+            ))
             output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
             val_f1 = metrics.f1_score(y_val.to(cpu_device), output_labelled, average='micro')
             # test
-            output = run_model_maybe_pos_embs(nodes_test, adjacency_test)
+            output = run_model_maybe_pos_embs(nodes_test, adjacency_test, laplacian_pos_emb(
+                adjacency_test
+            ))
             output_labelled = torch.where(output > 0.5, 1.0, 0.0).to(cpu_device)
             test_f1 = metrics.f1_score(y_test.to(cpu_device), output_labelled, average='micro')
 
