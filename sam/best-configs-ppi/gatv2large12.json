@@ -1,0 +1,1 @@
+{"tag": "gatv2", "type": "GATv2", "train_cfg": {"learning_rate": 0.005, "weight_decay": 0.0005, "max_epoch": 100, "step_lr": {"step": 25, "gamma": 0.5}}, "model_kwargs": {"internal_dim": 1024, "num_layers": 3, "num_heads": 8, "dropout": 0.2}}
