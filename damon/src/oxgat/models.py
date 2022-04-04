@@ -9,7 +9,7 @@ from sklearn.metrics import f1_score
 import torch
 import torch.nn.functional as F
 import torch_geometric.loader
-from typing import Type, Union, List
+from typing import Type, Union, List, Optional
 
 from . import components, utils
 
@@ -260,7 +260,7 @@ class InductiveGATModel(_BaseGATModel):
         self.log("test_acc", acc)
 
 
-class CustomTransductiveModel(AbstractModel):
+class CustomAttentionModel(AbstractModel):
     def __init__(
             self,
             in_features: int,
@@ -274,18 +274,24 @@ class CustomTransductiveModel(AbstractModel):
             learning_rate: float = 0.005,
             regularisation: float = 0.0005,
             restore_best: str = "loss",
+            batch_size: Optional[int] = None,
+            mode: str = "transductive",
             sampling: bool = False,
             sampling_neighbors: int = -1, # All
-            sampling_batch_size: int = 128,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
             heads_per_layer = [heads_per_layer]*num_layers
         if isinstance(hidden_feature_dims, int):
             hidden_feature_dims = [hidden_feature_dims]*(num_layers-1)
+        if batch_size is None:
+            batch_size = 128 if sampling else 1
         assert len(heads_per_layer) == num_layers
         assert len(hidden_feature_dims) == num_layers-1
         assert restore_best in ["loss", "acc"]
+        assert mode in ["transductive", "inductive"]
+        if sampling:
+            assert mode == "transductive"
 
         self.layers = torch.nn.ModuleList([
             layer_type(attention_type=attention_type,
@@ -306,11 +312,12 @@ class CustomTransductiveModel(AbstractModel):
             save_weights_only=True)
         self.learning_rate = learning_rate
         self.regularisation = regularisation
+        self.transductive = (mode == "transductive")
         self.sampling = sampling
         self.sampling_neighbors = sampling_neighbors
-        self.sampling_batch_size = sampling_batch_size
+        self.batch_size = batch_size
         self.dropout=dropout
-
+        
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
         for i, layer in enumerate(self.layers):
@@ -321,43 +328,56 @@ class CustomTransductiveModel(AbstractModel):
         return F.log_softmax(x, dim=1)
 
     def training_step(self, data, batch_idx):
+        mask = (data.train_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
         out = self(data)
-        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-        self.log("train_loss", loss, batch_size=data.train_mask.size(0))
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log("train_loss", loss, batch_size=int(mask.sum()))
         return loss
 
     def validation_step(self, data, batch_idx):
+        mask = (data.val_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
         out = self(data)
-        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
-        self.log("val_loss", loss, batch_size=data.val_mask.size(0))
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log("val_loss", loss, batch_size=int(mask.sum()))
         pred = out.argmax(dim=1)
-        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
-        acc = int(correct) / int(data.val_mask.sum())
-        self.log("val_acc", acc, batch_size=data.val_mask.size(0))
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log("val_acc", acc, batch_size=int(mask.sum()))
 
     def test_step(self, data, batch_idx):
+        mask = (data.test_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
         out = self(data)
         pred = out.argmax(dim=1)
-        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
-        acc = int(correct) / int(data.test_mask.sum())
-        self.log("test_acc", acc, batch_size=data.test_mask.size(0))
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log("test_acc", acc, batch_size=int(mask.sum()))
         
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(),
                                 lr=self.learning_rate,
                                 weight_decay=self.regularisation)
 
-    def standard_train(self, dataset, use_gpu=False):
+    def standard_train(self, train_dataset, val_dataset=None, use_gpu=False):
         """Automated training of this model."
         """
         self._init_trainer(use_gpu)
-        assert len(dataset) == 1
+        if val_dataset is None:
+            assert self.transductive
+            val_dataset = train_dataset
+        if self.transductive:
+            assert len(train_dataset) == 1
         train_loader = (torch_geometric.loader.NeighborLoader(
-                            dataset[0],
-                            num_neighbors=[self.sampling_neighbors]*len(self.layers),
-                            batch_size=self.sampling_batch_size) 
-                        if self.sampling else torch_geometric.loader.DataLoader(dataset))
-        val_loader = torch_geometric.loader.DataLoader(dataset)
+                train_dataset[0],
+                num_neighbors=[self.sampling_neighbors]*len(self.layers),
+                batch_size=self.batch_size) 
+            if self.sampling
+            else torch_geometric.loader.DataLoader(train_dataset,
+                                                   batch_size=self.batch_size))
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       batch_size=self.batch_size)
         self.trainer.fit(self,
                          train_dataloaders=train_loader,
                          val_dataloaders=val_loader)
