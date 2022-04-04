@@ -277,6 +277,9 @@ class GATv2(nn.Module):
                 alpha=alpha, attention_aggr=att_agg, dropout=dropout)
             for in_dim, out_dim, att_agg in zip(in_dims, out_dims, attention_aggrs)
         ])
+        self.activations = nn.ModuleList([
+            nn.ELU() for _ in range(num_layers - 1)
+        ])
 
     """ Params:
         node_matrix: a `N x input_dim` matrix of node features 
@@ -290,11 +293,10 @@ class GATv2(nn.Module):
     """
     def forward(self, node_matrix, adj_matrix):
         if not self.skip_conn:
-            for L in self.layers:
-                node_matrix = L(node_matrix, adj_matrix)
-            return node_matrix
+            for L, act in zip(self.layers[:-1], self.activations):
+                node_matrix = act(L(node_matrix, adj_matrix))
         else:
-            node_matrix = self.layers[0](node_matrix, adj_matrix)
-            for L in self.layers[1:-1]:
-                node_matrix = node_matrix + L(node_matrix, adj_matrix)
-            return self.layers[-1](node_matrix, adj_matrix)
+            node_matrix = self.activations[0](self.layers[0](node_matrix, adj_matrix))
+            for L, act in zip(self.layers[1:-1], self.activations[1:]):
+                node_matrix = node_matrix + act(L(node_matrix, adj_matrix))
+        return self.layers[-1](node_matrix, adj_matrix)
