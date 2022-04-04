@@ -13,9 +13,46 @@ import torch_geometric.data
 import torch_geometric.utils
 
 
+def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
+    """Applies dropout to a sparse tensor.
+    """
+    assert x.is_sparse, "Input is not sparse"
+    x = x.coalesce()
+    new_values = F.dropout(x.values(), p=p, training=training)
+    return torch.sparse_coo_tensor(values=new_values, 
+                                   indices=x.indices(),
+                                   size=x.size())
+
+
+def get_max_degree(dataset: torch_geometric.data.Dataset):
+    """Returns the maximum degree of any node in the dataset"""
+    results = []
+    for i in range(dataset.len()):
+        degrees = get_degrees(dataset.get(i).edge_index)
+        results.append(degrees.max().item())
+    return max(results)
+
+
+def get_degrees(edge_index: torch.Tensor,
+                num_nodes: Optional[int] = None,
+                out: bool = True):
+    """Gets a tensor of the (unweighted) degrees of each node in a graph
+    given its edge index.
+    """
+    N = torch_geometric.utils.num_nodes.maybe_num_nodes(edge_index, num_nodes)
+    degrees = torch.zeros(N, dtype=torch.long)
+    for i in range(N):
+        degrees[i] = (edge_index[1, edge_index[0] == i].unique().size(0)
+                      if out
+                      else edge_index[0,edge_index[1] == i].unique().size(0))
+    return degrees
+
 class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
     """Subclass of `pytorch_lightning.callbacks.early_stopping.EarlyStopping` that
     stops training early only if all of multiple conditions are met.
+
+    Implementation mostly copy-pasted/adapted from the PyTorch Lightning
+    superclass implementation.
 
     The semantics are the obvious ones, see documentation of `EarlyStopping`.
     """
@@ -149,85 +186,3 @@ class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
         else:
             msg = f"Metric {self.monitors[idx]} improved. New best score: {current:.3f}"
         return msg
-
-
-class MultipleModelCheckpoint(pl.callbacks.base.Callback):
-    """Custom checkpointing based on an improvement in all of a combination of
-    metrics. Saves as"""
-    def __init__(
-        self,
-        monitor: List[str],
-        modes: List[str],
-        filename: Optional[str] = "best_model.ckpt",
-        save_weights_only: bool = False,
-    ):
-        super().__init__()
-        self.monitor = monitor
-        self.modes = modes
-        self.save_weights_only = save_weights_only
-        self.filename = filename
-
-        torch_inf = torch.tensor(np.Inf)
-        mode_dict = {"min": torch_inf, "max": -torch_inf}
-        self.best_values = [mode_dict[mode] for mode in modes]
-        
-    def on_train_epoch_end(self, trainer: "pl.Trainer", pl_module: "pl.LightningModule") -> None:
-        """Save a checkpoint at the end of the training epoch."""
-        if not trainer.sanity_checking:
-            if not all(monitor in trainer.callback_metrics for monitor in self.monitor):
-                raise MisconfigurationException("Monitored metric not found.")
-            
-            # Save checkpoint if condition met
-            if all([
-                {"min": torch.lt, "max": torch.gt}[mode](
-                    trainer.callback_metrics[monitor],
-                    best
-                )
-                for monitor, mode, best in zip(self.monitor,
-                                               self.modes,
-                                               self.best_values)
-            ]):
-                trainer.save_checkpoint(self.filename, self.save_weights_only)
-
-            # Update best values
-            for i, (monitor, mode) in enumerate(zip(self.monitor, self.modes)):
-                current = trainer.callback_metrics[monitor]
-                best = self.best_values[i]
-                op = {"min": torch.lt, "max": torch.gt}[mode]
-                if op(current, best):
-                    self.best_values[i] = current
-
-
-def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
-    """Applies dropout to a sparse tensor.
-    """
-    assert x.is_sparse, "Input is not sparse"
-    x = x.coalesce()
-    new_values = F.dropout(x.values(), p=p, training=training)
-    return torch.sparse_coo_tensor(values=new_values, 
-                                   indices=x.indices(),
-                                   size=x.size())
-
-
-def get_max_degree(dataset: torch_geometric.data.Dataset):
-    """Returns the maximum degree of any node in the dataset"""
-    results = []
-    for i in range(dataset.len()):
-        degrees = get_degrees(dataset.get(i).edge_index)
-        results.append(degrees.max().item())
-    return max(results)
-
-
-def get_degrees(edge_index: torch.Tensor,
-                num_nodes: Optional[int] = None,
-                out: bool = True):
-    """Gets a tensor of the (unweighted) degrees of each node in a graph
-    given its edge index.
-    """
-    N = torch_geometric.utils.num_nodes.maybe_num_nodes(edge_index, num_nodes)
-    degrees = torch.zeros(N, dtype=torch.long)
-    for i in range(N):
-        degrees[i] = (edge_index[1, edge_index[0] == i].unique().size(0)
-                      if out
-                      else edge_index[0,edge_index[1] == i].unique().size(0))
-    return degrees

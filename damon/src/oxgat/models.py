@@ -80,7 +80,7 @@ class _BaseGATModel(AbstractModel):
         self.regularisation = regularisation
         self.train_batch_size = train_batch_size
         self.trainer = None
-        self.checkpointing: utils.MultipleModelCheckpoint = None
+        self.checkpointer: pl.callbacks.ModelCheckpoint = None
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(),
@@ -103,7 +103,7 @@ class _BaseGATModel(AbstractModel):
                          val_dataloaders=val_loader)
         # Restore best weights and validate
         self.trainer = pl.Trainer(**self.trainer_args)
-        self.trainer.validate(self, val_loader, ckpt_path="best_model.ckpt")
+        self.trainer.validate(self, val_loader, ckpt_path="best")
 
     def standard_test(self, dataset):
         """Method to test this model after having run `self.standard_train()`.
@@ -126,7 +126,7 @@ class _BaseGATModel(AbstractModel):
         trainer_args = {"max_epochs": 100000,
                         "log_every_n_steps": 1,
                         "callbacks": [early_stopping,
-                                      self.checkpointing,
+                                      self.checkpointer,
                                       progress_bar]}
         if use_gpu:
             trainer_args["gpus"] = 1
@@ -174,20 +174,14 @@ class TransductiveGATModel(_BaseGATModel):
             is_final_layer=True,
             attention_dropout=0.6,
             **kwargs)
-        if citeseer:
-            self.checkpointing = utils.MultipleModelCheckpoint(
-                monitor=["val_acc"],
-                modes=["max"],
-                save_weights_only="true",
-                filename="best_model.ckpt"
-            )
-        else: # PubMed or Cora
-            self.checkpointing = utils.MultipleModelCheckpoint(
-                monitor=["val_loss"], # Included acc in original paper for Cora
-                modes=["min"],
-                save_weights_only="true",
-                filename="best_model.ckpt"
-            )
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor="val_acc",
+            mode="max",
+            save_weights_only=True
+        ) if citeseer else pl.callbacks.ModelCheckpoint(
+            monitor="val_loss", # Included acc in original paper for Cora
+            mode="min",
+            save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -197,8 +191,6 @@ class TransductiveGATModel(_BaseGATModel):
         x = F.dropout(x, p=0.6, training=self.training)
         x = self.gat_layer_2(x, edge_index)
         return F.log_softmax(x, dim=1)
-
-    
 
 
 class InductiveGATModel(_BaseGATModel):
@@ -234,12 +226,9 @@ class InductiveGATModel(_BaseGATModel):
             num_heads=6,
             is_final_layer=True,
             **kwargs)
-        self.checkpointing = utils.MultipleModelCheckpoint(
-                monitor=["val_loss"],
-                modes=["min"],
-                save_weights_only="true",
-                filename="best_model.ckpt"
-            )
+        self.checkpointer = pl.callbacks.ModelCheckpoint(monitor="val_loss",
+                                                         mode="min",
+                                                         save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -286,7 +275,7 @@ class CustomTransductiveModel(AbstractModel):
             regularisation: float = 0.0005,
             restore_best: str = "loss",
             sampling: bool = False,
-            sampling_neighbors: int = 30,
+            sampling_neighbors: int = -1, # All
             sampling_batch_size: int = 128,
             **kwargs):
         super().__init__()
@@ -296,7 +285,6 @@ class CustomTransductiveModel(AbstractModel):
             hidden_feature_dims = [hidden_feature_dims]*(num_layers-1)
         assert len(heads_per_layer) == num_layers
         assert len(hidden_feature_dims) == num_layers-1
-        assert sampling in ["none", "neighbor", "saint"]
         assert restore_best in ["loss", "acc"]
 
         self.layers = torch.nn.ModuleList([
@@ -335,24 +323,24 @@ class CustomTransductiveModel(AbstractModel):
     def training_step(self, data, batch_idx):
         out = self(data)
         loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
-        self.log("train_loss", loss)
+        self.log("train_loss", loss, batch_size=data.train_mask.size(0))
         return loss
 
     def validation_step(self, data, batch_idx):
         out = self(data)
         loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
-        self.log("val_loss", loss)
+        self.log("val_loss", loss, batch_size=data.val_mask.size(0))
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
         acc = int(correct) / int(data.val_mask.sum())
-        self.log("val_acc", acc)
+        self.log("val_acc", acc, batch_size=data.val_mask.size(0))
 
     def test_step(self, data, batch_idx):
         out = self(data)
         pred = out.argmax(dim=1)
         correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
         acc = int(correct) / int(data.test_mask.sum())
-        self.log("test_acc", acc)
+        self.log("test_acc", acc, batch_size=data.test_mask.size(0))
         
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(),
