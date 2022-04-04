@@ -1,6 +1,6 @@
 {
-    "tag" : "universal-transformer",
-    "type" : "universal",
+    "tag" : "vanilla-transformer",
+    "type" : "vanilla",
 
     "train_cfg" :
     {
