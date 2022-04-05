@@ -18,7 +18,7 @@
     "model_kwargs" :
     {
         "internal_dim" : 128,
-        "num_layers" : 2,
+        "num_layers" : 1,
         "num_heads" : 8,
         "skip_conn" : true,
         "identity_bias" : 0.0,
