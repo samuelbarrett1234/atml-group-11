@@ -302,6 +302,7 @@ class CustomNodeClassifier(AbstractModel):
             sampling_neighbors: int = -1, # All
             loader_num_workers: int = 0,
             early_stopping_patience: int = 100,
+            max_epochs: int = 100000,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
@@ -332,8 +333,7 @@ class CustomNodeClassifier(AbstractModel):
 
         self.checkpointer = pl.callbacks.ModelCheckpoint(
             monitor=f"val_{restore_best}",
-            mode=("min" if restore_best=="loss" else "max"),
-            save_weights_only=True)
+            mode=("min" if restore_best=="loss" else "max"))
         self.learning_rate = learning_rate
         self.regularisation = regularisation
         self.transductive = (mode == "transductive")
@@ -343,6 +343,9 @@ class CustomNodeClassifier(AbstractModel):
         self.dropout=dropout
         self.loader_num_workers = loader_num_workers
         self.early_stopping_patience = early_stopping_patience
+        self.max_epochs = max_epochs
+
+        self.final_metrics = {}
         
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -411,8 +414,15 @@ class CustomNodeClassifier(AbstractModel):
                          train_dataloaders=train_loader,
                          val_dataloaders=val_loader)
         # Restore best weights and validate
+        self.final_metrics["end_train_loss"] = float(self.trainer.callback_metrics["train_loss"])
+        self.final_metrics["end_val_loss"] = float(self.trainer.callback_metrics["val_loss"])
+        self.final_metrics["end_val_acc"] = float(self.trainer.callback_metrics["val_acc"])
+        self.final_metrics["epochs_trained"] = self.current_epoch+1
         self.trainer = pl.Trainer(**self.trainer_args)
         self.trainer.validate(self, val_loader, ckpt_path="best")
+        self.final_metrics["restored_val_loss"] = float(self.trainer.callback_metrics["val_loss"])
+        self.final_metrics["restored_val_acc"] = float(self.trainer.callback_metrics["val_acc"])
+        self.final_metrics["restored_epoch_number"] = self.current_epoch
 
     def standard_test(self, dataset):
         """Method to test this model after having run `self.standard_train()`.
@@ -420,6 +430,7 @@ class CustomNodeClassifier(AbstractModel):
         assert self.trainer is not None, "Must run `self.standard_train()` first."
         dataloader = torch_geometric.loader.DataLoader(dataset)
         self.trainer.test(self, dataloader)
+        self.final_metrics["test_acc"] = float(self.trainer.callback_metrics["test_acc"])
 
     # Initialize the trainer for use in self.train()
     def _init_trainer(self, use_gpu):
@@ -432,7 +443,7 @@ class CustomNodeClassifier(AbstractModel):
             patience=self.early_stopping_patience,
             verbose=False
         )
-        trainer_args = {"max_epochs": 100000,
+        trainer_args = {"max_epochs": self.max_epochs,
                         "log_every_n_steps": 1,
                         "callbacks": [early_stopping,
                                       self.checkpointer,

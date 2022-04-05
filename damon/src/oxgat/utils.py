@@ -27,8 +27,8 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
 def get_max_degree(dataset: torch_geometric.data.Dataset):
     """Returns the maximum degree of any node in the dataset"""
     results = []
-    for i in range(dataset.len()):
-        degrees = get_degrees(dataset.get(i).edge_index)
+    for i in range(len(dataset)):
+        degrees = get_degrees(dataset[i].edge_index)
         results.append(degrees.max().item())
     return max(results)
 
