@@ -3,10 +3,9 @@
 PyTorch Lightning module).
 """
 from abc import ABC, abstractmethod
-from json import load
 
 import pytorch_lightning as pl
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, roc_auc_score
 import torch
 import torch.nn.functional as F
 import torch_geometric.loader
@@ -193,6 +192,28 @@ class TransductiveGATModel(_BaseGATModel):
         x = self.gat_layer_2(x, edge_index)
         return F.log_softmax(x, dim=1)
 
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+        self.log("train_loss", loss)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out[data.val_mask], data.y[data.val_mask])
+        self.log("val_loss", loss)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
+        acc = int(correct) / int(data.val_mask.sum())
+        self.log("val_acc", acc)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[data.test_mask] == data.y[data.test_mask]).sum()
+        acc = int(correct) / int(data.test_mask.sum())
+        self.log("test_acc", acc)
+
 
 class InductiveGATModel(_BaseGATModel):
     """Implementation of the inductive model defined in the original GAT paper.
@@ -279,7 +300,8 @@ class CustomNodeClassifier(AbstractModel):
             mode: str = "transductive",
             sampling: bool = False,
             sampling_neighbors: int = -1, # All
-            loader_num_workers: int = 4,
+            loader_num_workers: int = 0,
+            early_stopping_patience: int = 100,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
@@ -320,6 +342,7 @@ class CustomNodeClassifier(AbstractModel):
         self.batch_size = batch_size
         self.dropout=dropout
         self.loader_num_workers = loader_num_workers
+        self.early_stopping_patience = early_stopping_patience
         
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -376,11 +399,11 @@ class CustomNodeClassifier(AbstractModel):
                 train_dataset[0],
                 num_neighbors=[self.sampling_neighbors]*len(self.layers),
                 batch_size=self.batch_size,
-                num_workers=self.loader_num_workers,) 
+                num_workers=self.loader_num_workers) 
             if self.sampling
             else torch_geometric.loader.DataLoader(train_dataset,
                                                    batch_size=self.batch_size,
-                                                   num_workers=self.loader_num_workers,))
+                                                   num_workers=self.loader_num_workers))
         val_loader = torch_geometric.loader.DataLoader(val_dataset,
                                                        batch_size=self.batch_size,
                                                        num_workers=self.loader_num_workers)
@@ -406,7 +429,7 @@ class CustomNodeClassifier(AbstractModel):
         early_stopping = utils.MultipleEarlyStopping(
             monitors=["val_acc","val_loss"],
             modes=["max","min"],
-            patience=100,
+            patience=self.early_stopping_patience,
             verbose=False
         )
         trainer_args = {"max_epochs": 100000,
@@ -425,13 +448,13 @@ class CustomGraphClassifier(AbstractModel):
             self,
             in_features: int,
             num_classes: int,
-            num_attention_layers: int = 2,
-            heads_per_layer: Union[int, List[int]] = [8,1],
-            hidden_feature_dims: Union[int, List[int]] = 8,
+            num_attention_layers: int = 4,
+            heads_per_layer: Union[int, List[int]] = 2,
+            hidden_feature_dims: Union[int, List[int]] = 16,
             layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
             attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
             num_mlp_hidden_layers: int = 1,
-            mlp_hidden_layer_dims: Union[int, List[int]] = 256,
+            mlp_hidden_layer_dims: Optional[Union[int, List[int]]] = None,
             dropout: float = 0.6,
             learning_rate: float = 0.005,
             regularisation: float = 0.0005,
@@ -440,12 +463,17 @@ class CustomGraphClassifier(AbstractModel):
             pooling: str = "mean",
             loader_num_workers: int = 4,
             cast_to_float = False,
+            early_stopping_patience: int = 100,
+            metric: str = "accuracy",
+            add_pos: bool = False,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
             heads_per_layer = [heads_per_layer]*num_attention_layers
         if isinstance(hidden_feature_dims, int):
             hidden_feature_dims = [hidden_feature_dims]*num_attention_layers
+        if mlp_hidden_layer_dims is None:
+            mlp_hidden_layer_dims = hidden_feature_dims[-1]
         if isinstance(mlp_hidden_layer_dims, int):
             mlp_hidden_layer_dims = [mlp_hidden_layer_dims]*num_mlp_hidden_layers
         assert len(heads_per_layer) == num_attention_layers
@@ -453,6 +481,9 @@ class CustomGraphClassifier(AbstractModel):
         assert len(mlp_hidden_layer_dims) == num_mlp_hidden_layers
         assert restore_best in ["loss", "acc"]
         assert pooling in ["mean", "max", "sum"]
+        assert metric in ["accuracy", "roc_auc_score"]
+        if metric == "roc_auc_score":
+            assert num_classes == 2
 
         self.attention_layers = torch.nn.ModuleList([
             layer_type(attention_type=attention_type,
@@ -470,7 +501,7 @@ class CustomGraphClassifier(AbstractModel):
             torch.nn.Linear(hidden_feature_dims[-1],
                             mlp_hidden_layer_dims[0]),
             *[layer for i in range(num_mlp_hidden_layers)
-                    for layer in (torch.nn.LeakyReLU(0.2),
+                    for layer in (torch.nn.ReLU(),
                                   torch.nn.Linear(mlp_hidden_layer_dims[i],
                                                   (num_classes
                                                    if i == num_mlp_hidden_layers-1
@@ -492,9 +523,14 @@ class CustomGraphClassifier(AbstractModel):
         self.dropout=dropout
         self.loader_num_workers = loader_num_workers
         self.cast_to_float = cast_to_float
+        self.early_stopping_patience = early_stopping_patience
+        self.use_roc = (metric == "roc_auc_score")
+        self.add_pos = add_pos
         
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
+        if self.add_pos: # For MNIST/CIFAR
+            x = torch.cat([x, data.pos], dim=-1)
         if self.cast_to_float:
             x = x.float()
         for layer in self.attention_layers:
@@ -515,16 +551,22 @@ class CustomGraphClassifier(AbstractModel):
         out = self(data)
         loss = F.nll_loss(out, data.y.flatten())
         self.log("val_loss", loss, batch_size=data.num_graphs)
-        pred = out.argmax(dim=1)
-        correct = (pred == data.y.flatten()).sum()
-        acc = int(correct) / data.num_graphs
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
         self.log("val_acc", acc, batch_size=data.num_graphs)
 
     def test_step(self, data, batch_idx):
         out = self(data)
-        pred = out.argmax(dim=1)
-        correct = (pred == data.y.flatten()).sum()
-        acc = int(correct) / data.num_graphs
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
         self.log("test_acc", acc, batch_size=data.num_graphs)
         
     def configure_optimizers(self):
@@ -542,7 +584,7 @@ class CustomGraphClassifier(AbstractModel):
                                                          shuffle=True)
         val_loader = torch_geometric.loader.DataLoader(val_dataset,
                                                        num_workers=self.loader_num_workers,
-                                                       batch_size=self.batch_size)
+                                                       batch_size=val_dataset.len())
         self.trainer.fit(self,
                          train_dataloaders=train_loader,
                          val_dataloaders=val_loader)
@@ -554,7 +596,7 @@ class CustomGraphClassifier(AbstractModel):
         """Method to test this model after having run `self.standard_train()`.
         """
         assert self.trainer is not None, "Must run `self.standard_train()` first."
-        dataloader = torch_geometric.loader.DataLoader(dataset)
+        dataloader = torch_geometric.loader.DataLoader(dataset, batch_size=dataset.len())
         self.trainer.test(self, dataloader)
 
     # Initialize the trainer for use in self.train()
@@ -565,7 +607,7 @@ class CustomGraphClassifier(AbstractModel):
         early_stopping = utils.MultipleEarlyStopping(
             monitors=["val_acc","val_loss"],
             modes=["max","min"],
-            patience=100,
+            patience=self.early_stopping_patience,
             verbose=False
         )
         trainer_args = {"max_epochs": 100000,
