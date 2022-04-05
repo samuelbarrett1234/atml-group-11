@@ -203,7 +203,7 @@ class MultipleExperimentRunner:
                 return next(self.iterable)
 
 
-def load_experiments(config_filenames, device, dataset):
+def load_experiments(config_filenames, device, dataset, epoch_override=None):
     for fname in config_filenames:
         # place log and saved model next to config
         base = os.path.splitext(fname)[0]
@@ -212,6 +212,9 @@ def load_experiments(config_filenames, device, dataset):
 
         with open(fname, "r") as cfg_f:
             cfg = json.load(cfg_f)
+
+        if epoch_override is not None:
+            cfg["train_cfg"]["max_epoch"] = epoch_override
 
         yield Experiment(
             device, dataset, cfg, log_fname, model_fname,
@@ -242,7 +245,8 @@ def run(i, args):
         return None
 
     # load experiments, then pass them to the MultipleExperimentRunner
-    runner = MultipleExperimentRunner(load_experiments(args.config, device, args.dataset))
+    runner = MultipleExperimentRunner(load_experiments(
+        args.config, device, args.dataset, args.override_epochs))
     if not args.quiet:
         runner = tqdm(runner)
     # iterate through the runner to run all of the experiments
@@ -261,6 +265,8 @@ if __name__ == "__main__":
                         help="Set this to produce no output.")
     parser.add_argument("--device", type=str, action='append',
                         help="Set torch device, e.g. cuda:0 or cpu.")
+    parser.add_argument("--override-epochs", type=int, action='store',
+                        help="Override the maximum number of epochs stored in config(s).")
     args = parser.parse_args()
 
     if args.dataset not in EXPERIMENT_CLASS:
