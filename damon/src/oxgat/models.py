@@ -3,6 +3,7 @@
 PyTorch Lightning module).
 """
 from abc import ABC, abstractmethod
+from json import load
 
 import pytorch_lightning as pl
 from sklearn.metrics import f1_score
@@ -260,7 +261,7 @@ class InductiveGATModel(_BaseGATModel):
         self.log("test_acc", acc)
 
 
-class CustomAttentionModel(AbstractModel):
+class CustomNodeClassifier(AbstractModel):
     def __init__(
             self,
             in_features: int,
@@ -278,6 +279,7 @@ class CustomAttentionModel(AbstractModel):
             mode: str = "transductive",
             sampling: bool = False,
             sampling_neighbors: int = -1, # All
+            loader_num_workers: int = 4,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
@@ -317,6 +319,7 @@ class CustomAttentionModel(AbstractModel):
         self.sampling_neighbors = sampling_neighbors
         self.batch_size = batch_size
         self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
         
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -372,11 +375,173 @@ class CustomAttentionModel(AbstractModel):
         train_loader = (torch_geometric.loader.NeighborLoader(
                 train_dataset[0],
                 num_neighbors=[self.sampling_neighbors]*len(self.layers),
-                batch_size=self.batch_size) 
+                batch_size=self.batch_size,
+                num_workers=self.loader_num_workers,) 
             if self.sampling
             else torch_geometric.loader.DataLoader(train_dataset,
-                                                   batch_size=self.batch_size))
+                                                   batch_size=self.batch_size,
+                                                   num_workers=self.loader_num_workers,))
         val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       batch_size=self.batch_size,
+                                                       num_workers=self.loader_num_workers)
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path="best")
+
+    def standard_test(self, dataset):
+        """Method to test this model after having run `self.standard_train()`.
+        """
+        assert self.trainer is not None, "Must run `self.standard_train()` first."
+        dataloader = torch_geometric.loader.DataLoader(dataset)
+        self.trainer.test(self, dataloader)
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=["val_acc","val_loss"],
+            modes=["max","min"],
+            patience=100,
+            verbose=False
+        )
+        trainer_args = {"max_epochs": 100000,
+                        "log_every_n_steps": 1,
+                        "callbacks": [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args["gpus"] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)
+
+
+class CustomGraphClassifier(AbstractModel):
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_attention_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            num_mlp_hidden_layers: int = 1,
+            mlp_hidden_layer_dims: Union[int, List[int]] = 256,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = "loss",
+            batch_size: int = 128,
+            pooling: str = "mean",
+            loader_num_workers: int = 4,
+            cast_to_float = False,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_attention_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*num_attention_layers
+        if isinstance(mlp_hidden_layer_dims, int):
+            mlp_hidden_layer_dims = [mlp_hidden_layer_dims]*num_mlp_hidden_layers
+        assert len(heads_per_layer) == num_attention_layers
+        assert len(hidden_feature_dims) == num_attention_layers
+        assert len(mlp_hidden_layer_dims) == num_mlp_hidden_layers
+        assert restore_best in ["loss", "acc"]
+        assert pooling in ["mean", "max", "sum"]
+
+        self.attention_layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=hidden_feature_dims[i],
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_attention_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_attention_layers)])
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(hidden_feature_dims[-1],
+                            mlp_hidden_layer_dims[0]),
+            *[layer for i in range(num_mlp_hidden_layers)
+                    for layer in (torch.nn.LeakyReLU(0.2),
+                                  torch.nn.Linear(mlp_hidden_layer_dims[i],
+                                                  (num_classes
+                                                   if i == num_mlp_hidden_layers-1
+                                                   else mlp_hidden_layer_dims[i+1])))
+             ])
+        self.pool = {
+            "mean": torch_geometric.nn.global_mean_pool,
+            "max": torch_geometric.nn.global_max_pool,
+            "sum": torch_geometric.nn.global_add_pool,
+        }[pooling]
+
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f"val_{restore_best}",
+            mode=("min" if restore_best=="loss" else "max"),
+            save_weights_only=True)
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.batch_size = batch_size
+        self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
+        self.cast_to_float = cast_to_float
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        if self.cast_to_float:
+            x = x.float()
+        for layer in self.attention_layers:
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            x = F.elu(x)
+        out = self.pool(x, batch=data.batch)
+        out = self.mlp(out)
+        return F.log_softmax(out, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log("train_loss", loss, batch_size=data.num_graphs)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log("val_loss", loss, batch_size=data.num_graphs)
+        pred = out.argmax(dim=1)
+        correct = (pred == data.y.flatten()).sum()
+        acc = int(correct) / data.num_graphs
+        self.log("val_acc", acc, batch_size=data.num_graphs)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred == data.y.flatten()).sum()
+        acc = int(correct) / data.num_graphs
+        self.log("test_acc", acc, batch_size=data.num_graphs)
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset, use_gpu=False):
+        """Automated training of this model."
+        """
+        self._init_trainer(use_gpu)
+        train_loader = torch_geometric.loader.DataLoader(train_dataset,
+                                                         batch_size=self.batch_size,
+                                                         num_workers=self.loader_num_workers,
+                                                         shuffle=True)
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       num_workers=self.loader_num_workers,
                                                        batch_size=self.batch_size)
         self.trainer.fit(self,
                          train_dataloaders=train_loader,
@@ -389,7 +554,7 @@ class CustomAttentionModel(AbstractModel):
         """Method to test this model after having run `self.standard_train()`.
         """
         assert self.trainer is not None, "Must run `self.standard_train()` first."
-        dataloader = torch_geometric.loader.DataLoader(dataset) #  TODO: sampling on val/test
+        dataloader = torch_geometric.loader.DataLoader(dataset)
         self.trainer.test(self, dataloader)
 
     # Initialize the trainer for use in self.train()
