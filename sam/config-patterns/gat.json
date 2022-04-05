@@ -1,0 +1,17 @@
+{
+    "tag" : "gat",
+    "type" : "GAT_Inductive",
+
+    "train_cfg" :
+    {
+        "learning_rate" : 0.005,
+        "weight_decay" : 0.0005,
+        "max_epoch" : 100,
+
+        "step_lr" :
+        {
+            "step" : 25,
+            "gamma" : 0.5
+        }
+    }
+}

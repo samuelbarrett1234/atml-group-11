@@ -80,7 +80,6 @@ class GAT_Inductive(nn.Module):
                                                                alpha=0.2,
                                                                attention_aggr='mean',
                                                                dropout=None)
-        self.activation_3 = nn.Sigmoid()
 
     """ Params:
         node_matrix: a `N x F` matrix of node features 
@@ -104,9 +103,8 @@ class GAT_Inductive(nn.Module):
         a_2_skip = a_2 + a_1
 
         z_3 = self.attention_layer_3(a_2_skip, adj_matrix)
-        a_3 = self.activation_3(z_3)
 
-        return a_3
+        return z_3
 
 
 class VanillaTransformer(nn.Module):
