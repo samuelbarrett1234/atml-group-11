@@ -187,9 +187,9 @@ class GATv2AttentionHead(AbstractAttentionHead):
         self.a2 = torch.nn.Linear(out_features, 1, bias=False)
 
         # Reference for feature update matrix
-        self.W = {"target": self.W1,
-                  "source": self.W2,
-                  "separate": self.W3}[feature_update_matrix]
+        self.W = self.W1 if feature_update_matrix == "target" else (
+                 self.W2 if feature_update_matrix == "source" else
+                 self.W3)
         
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
         self.leaky_relu_slope = leaky_relu_slope

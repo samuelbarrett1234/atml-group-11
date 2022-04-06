@@ -224,10 +224,12 @@ class InductiveGATModel(_BaseGATModel):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
+    restore_loss : bool = True
+        Whether to restore to the best loss (as opposed to score).
     **kwargs
         Keyword arguments to be supplied to the attention layers.
     """
-    def __init__(self, in_features: int, num_classes: int, **kwargs):
+    def __init__(self, in_features: int, num_classes: int, restore_loss: bool = True, **kwargs):
         super().__init__(lr=0.005, train_batch_size=2)
         self.gat_layer_1 = components.MultiHeadAttentionLayer(
             attention_type=components.GATAttentionHead,
@@ -248,8 +250,8 @@ class InductiveGATModel(_BaseGATModel):
             num_heads=6,
             is_final_layer=True,
             **kwargs)
-        self.checkpointer = pl.callbacks.ModelCheckpoint(monitor="val_loss",
-                                                         mode="min",
+        self.checkpointer = pl.callbacks.ModelCheckpoint(monitor="val_loss" if restore_loss else "val_acc",
+                                                         mode="min" if restore_loss else "max",
                                                          save_weights_only=True)
 
     def forward(self, data):
@@ -302,7 +304,7 @@ class CustomNodeClassifier(AbstractModel):
             sampling_neighbors: int = -1, # All
             loader_num_workers: int = 0,
             early_stopping_patience: int = 100,
-            max_epochs: int = 100000,
+            max_epochs: int = 2000,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
