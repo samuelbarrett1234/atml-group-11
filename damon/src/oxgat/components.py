@@ -159,35 +159,45 @@ class GATv2AttentionHead(AbstractAttentionHead):
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
-    separate_weights : bool, optional
-        Whether to apply separate weights to source and target nodes.
-        Defaults to False.
+    weight_sharing : bool, optional
+        Whether to require W_1=W_2. Defaults to True.
     bias : bool, optional
         Whether to add a bias term (to the learnt weight matrix/matrices).
-        Defaults to False.
+        Defaults to True.
+    feature_update_matrix : str, optional
+        String in ["source", "target", "separate"]. Defaults to "source".
     """
     def __init__(self,
                  in_features: int,
                  out_features: int,
                  leaky_relu_slope: bool = 0.2,
                  attention_dropout: float = 0,
-                 separate_weights: bool = False,
-                 bias: bool = False):
+                 weight_sharing: bool = True,
+                 bias: bool = True,
+                 feature_update_matrix: str = "source"):
         torch.nn.Module.__init__(self)
+        assert feature_update_matrix in ["source", "target", "separate"]
         
-        if separate_weights:
-            self.W1 = torch.nn.Linear(in_features, out_features, bias=bias)
-            self.W2 = torch.nn.Linear(in_features, out_features, bias=bias)
-        else:
-            self.W = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.W1 = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.W2 = (self.W1 if weight_sharing 
+                   else torch.nn.Linear(in_features, out_features, bias=bias))
+        if feature_update_matrix == "separate":
+            self.W3 = torch.nn.Linear(in_features, out_features, bias=bias)
         self.a1 = torch.nn.Linear(out_features, 1, bias=False)
         self.a2 = torch.nn.Linear(out_features, 1, bias=False)
 
+        # Reference for feature update matrix
+        self.W = {"target": self.W1,
+                  "source": self.W2,
+                  "separate": self.W3}[feature_update_matrix]
+        
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
         self.leaky_relu_slope = leaky_relu_slope
         self.attention_dropout = attention_dropout
         self.out_features = out_features
-        self.separate_weights = separate_weights
+        self.weight_sharing = weight_sharing
+        self.feature_update_matrix = feature_update_matrix
+        self.separate = (feature_update_matrix == "separate")
 
         self.reset_parameters()
 
@@ -195,11 +205,11 @@ class GATv2AttentionHead(AbstractAttentionHead):
         # TODO: add corrections
         W_gain = torch.nn.init.calculate_gain("leaky_relu",
                                               self.leaky_relu_slope)
-        if self.separate_weights:
-            torch.nn.init.xavier_uniform_(self.W1.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.W1.weight, gain=W_gain)
+        if not self.weight_sharing:
             torch.nn.init.xavier_uniform_(self.W2.weight, gain=W_gain)
-        else:
-            torch.nn.init.xavier_uniform_(self.W.weight, gain=W_gain)
+        if self.separate:
+            torch.nn.init.xavier_uniform_(self.W3.weight, gain=W_gain)
         torch.nn.init.xavier_uniform_(self.a1.weight, gain=1)
         torch.nn.init.xavier_uniform_(self.a2.weight, gain=1)
 
@@ -223,9 +233,7 @@ class GATv2AttentionHead(AbstractAttentionHead):
         sparse_attention = utils.sparse_dropout(sparse_attention,
                                                 p=self.attention_dropout,
                                                 training=self.training)
-        return torch.sparse.mm(sparse_attention, self.W2(x)
-                                                 if self.separate_weights
-                                                 else self.W(x))
+        return torch.sparse.mm(sparse_attention, self.W(x))
 
     # Calculates the sparse attention matrix for a graph
     def _sparse_attention(self, x, edge_index):
@@ -236,8 +244,7 @@ class GATv2AttentionHead(AbstractAttentionHead):
         edge_index = torch.cat([edge_index, self_loops], dim=1)
 
         # Calculate attention
-        x1 = self.leaky_relu(self.W1(x) if self.separate_weights else self.W(x))
-        x2 = self.leaky_relu(self.W2(x) if self.separate_weights else self.W(x))
+        x1, x2 = self.leaky_relu(self.W1(x)), self.leaky_relu(self.W2(x))
         attention_vals = (self.a1(x1[edge_index[0,:],:]) + 
                           self.a2(x2[edge_index[1,:],:])).flatten()
         e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
@@ -309,9 +316,14 @@ class MultiHeadAttentionLayer(torch.nn.Module):
 
 
 class MultiHeadAttentionLayerWithDegrees(MultiHeadAttentionLayer): # TODO: generalise to weighted degree
-    def __init__(self, max_degree, in_features, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
+        max_degree = kwargs.pop("max_degree") # Required
         self.add_degrees = OneHotDegree(max_degree)
-        super().__init__(in_features+max_degree+1, *args, **kwargs)
+        if "in_features" in kwargs:
+            kwargs["in_features"] += max_degree+1
+        else:
+            args[1] += max_degree+1
+        super().__init__(*args, **kwargs)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
         x = self.add_degrees(Data(x, edge_index)).x
