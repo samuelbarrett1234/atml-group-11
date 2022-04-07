@@ -9,7 +9,6 @@ from torch_geometric.utils import to_dense_adj
 from torch_geometric.transforms import OneHotDegree
 from torch_geometric.data import Data
 from typing import Type
-from torch_sparse import spspmm
 
 from . import utils
 
@@ -318,6 +317,11 @@ class MultiHeadAttentionLayer(torch.nn.Module):
 
 
 class MultiHeadAttentionLayerWithDegrees(MultiHeadAttentionLayer): # TODO: generalise to weighted degree
+    """Represents a single multi-head attention layer which encodes each
+    node's degree into its feature vector before applying attention heads.
+
+    Inherits from `MultiHeadAttentionLayer`.
+    """
     def __init__(self, *args, **kwargs):
         max_degree = kwargs.pop("max_degree") # Required
         self.add_degrees = OneHotDegree(max_degree)

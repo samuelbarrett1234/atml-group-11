@@ -38,10 +38,11 @@ PyTorch Lightning module).
 from abc import ABC, abstractmethod
 
 import pytorch_lightning as pl
-from sklearn.metrics import f1_score
+from sklearn.metrics import f1_score, roc_auc_score
 import torch
 import torch.nn.functional as F
 import torch_geometric.loader
+from typing import Type, Union, List, Optional
 
 from . import components, utils
 
@@ -112,6 +113,7 @@ class _BaseGATModel(AbstractModel):
         self.regularisation = regularisation
         self.train_batch_size = train_batch_size
         self.trainer = None
+        self.checkpointer: pl.callbacks.ModelCheckpoint = None
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(),
@@ -125,11 +127,16 @@ class _BaseGATModel(AbstractModel):
         self._init_trainer(use_gpu)
         if val_dataset is None:
             val_dataset = train_dataset
-        train_loader = torch_geometric.loader.DataLoader(train_dataset,
-                                                         batch_size=self.train_batch_size,
-                                                         shuffle=True)
+        train_loader = torch_geometric.loader.DataLoader(
+            train_dataset,
+            batch_size=self.train_batch_size,
+            shuffle=True)
         val_loader = torch_geometric.loader.DataLoader(val_dataset)
-        self.trainer.fit(self, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        self.trainer.fit(self, train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
 
     def standard_test(self, dataset):
         &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
@@ -142,6 +149,7 @@ class _BaseGATModel(AbstractModel):
     def _init_trainer(self, use_gpu):
         # Stop training only if neither validation loss nor accuracy has
         # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
         early_stopping = utils.MultipleEarlyStopping(
             monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
             modes=[&#34;max&#34;,&#34;min&#34;],
@@ -150,9 +158,12 @@ class _BaseGATModel(AbstractModel):
         )
         trainer_args = {&#34;max_epochs&#34;: 100000,
                         &#34;log_every_n_steps&#34;: 1,
-                        &#34;callbacks&#34;: [early_stopping]}
+                        &#34;callbacks&#34;: [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
         if use_gpu:
             trainer_args[&#34;gpus&#34;] = 1
+        self.trainer_args = trainer_args
         self.trainer = pl.Trainer(**trainer_args)
 
 
@@ -166,26 +177,44 @@ class TransductiveGATModel(_BaseGATModel):
     num_classes : int
         The number of classes for node classification.
     pubmed : bool, optional
-        Whether to apply the architecture changes made for the PubMed dataset
-        in the original paper. Defaults to False.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False.
+    citeseer : bool, optional
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False. Mutually exclusive
+        with `pubmed`.
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     &#34;&#34;&#34;
     def __init__(self, in_features: int, num_classes: int,
-                 pubmed: bool = False, sparse: bool = True):
+                 pubmed: bool = False, citeseer: bool = False,
+                 **kwargs):
+        assert not (pubmed and citeseer)
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=8,
-                                               num_heads=8,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=64,
-                                               out_features=num_classes,
-                                               num_heads=8 if pubmed else 1,
-                                               is_final_layer=True,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=8,
+            num_heads=8,
+            attention_dropout=0.6,
+            **kwargs)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=64,
+            out_features=num_classes,
+            num_heads=8 if pubmed else 1,
+            is_final_layer=True,
+            attention_dropout=0.6,
+            **kwargs)
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=&#34;val_acc&#34;,
+            mode=&#34;max&#34;,
+            save_weights_only=True
+        ) if citeseer else pl.callbacks.ModelCheckpoint(
+            monitor=&#34;val_loss&#34;, # Included acc in original paper for Cora
+            mode=&#34;min&#34;,
+            save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -208,7 +237,7 @@ class TransductiveGATModel(_BaseGATModel):
         self.log(&#34;val_loss&#34;, loss)
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
-        acc = int(correct) / int(data.test_mask.sum())
+        acc = int(correct) / int(data.val_mask.sum())
         self.log(&#34;val_acc&#34;, acc)
 
     def test_step(self, data, batch_idx):
@@ -228,24 +257,35 @@ class InductiveGATModel(_BaseGATModel):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+    restore_loss : bool = True
+        Whether to restore to the best loss (as opposed to score).
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     &#34;&#34;&#34;
-    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
+    def __init__(self, in_features: int, num_classes: int, restore_loss: bool = True, **kwargs):
         super().__init__(lr=0.005, train_batch_size=2)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=1024,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_3 = components.GATLayer(in_features=1024,
-                                               out_features=num_classes,
-                                               num_heads=6,
-                                               is_final_layer=True,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=256,
+            num_heads=4,
+            **kwargs)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=256,
+            num_heads=4,
+            **kwargs)
+        self.gat_layer_3 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=num_classes,
+            num_heads=6,
+            is_final_layer=True,
+            **kwargs)
+        self.checkpointer = pl.callbacks.ModelCheckpoint(monitor=&#34;val_loss&#34; if restore_loss else &#34;val_acc&#34;,
+                                                         mode=&#34;min&#34; if restore_loss else &#34;max&#34;,
+                                                         save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -274,7 +314,505 @@ class InductiveGATModel(_BaseGATModel):
         out = self(data)
         pred = torch.round(out)
         acc = f1_score(data.y.cpu(), pred.cpu(), average=&#34;micro&#34;)
-        self.log(&#34;test_acc&#34;, acc)</code></pre>
+        self.log(&#34;test_acc&#34;, acc)
+
+
+class CustomNodeClassifier(AbstractModel):
+    &#34;&#34;&#34;A configurable node classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in [&#34;loss&#34;, &#34;acc&#34;] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to &#34;loss&#34;.
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch, if inductive classification,
+        or number of subgraphs in a training/testing batch, if transductive
+        classification and sampling is enabled. If transductive classification
+        and sampling is disabled this should always be 1. Defaults to None, which
+        will use 128 graphs/subgraphs in a batch if relevant.
+    mode : str, optional
+        String in [&#34;transductive&#34;, &#34;inductive&#34;] specifying whether the given
+        task will be transductive or inductive node classification. If
+        &#34;transductive&#34; the provided data is assumed to have `train_mask`,
+        `val_mask` and `test_mask` attributes.Defaults to &#34;transductive&#34;.
+    sampling : str, optional
+        Whether to use sampling to load batches of subgraphs instead of entire
+        graphs during training. May help with memory usage. Defaults to False.
+    sampling_neighbors: int, optional
+        If sampling is enabled, this specifies how many neighbours of a node
+        should be sampled at each step. If -1, all neighbours will be sampled.
+        Defaults to -1.
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 100.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    &#34;&#34;&#34;
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = &#34;loss&#34;,
+            batch_size: Optional[int] = None,
+            mode: str = &#34;transductive&#34;,
+            sampling: bool = False,
+            sampling_neighbors: int = -1, # All
+            loader_num_workers: int = 0,
+            early_stopping_patience: int = 100,
+            max_epochs: int = 2000,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*(num_layers-1)
+        if batch_size is None:
+            batch_size = 128 if sampling else 1
+        assert len(heads_per_layer) == num_layers
+        assert len(hidden_feature_dims) == num_layers-1
+        assert restore_best in [&#34;loss&#34;, &#34;acc&#34;]
+        assert mode in [&#34;transductive&#34;, &#34;inductive&#34;]
+        if sampling:
+            assert mode == &#34;transductive&#34;
+
+        self.layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=(num_classes if i==num_layers-1
+                                     else hidden_feature_dims[i]),
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_layers)])
+
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f&#34;val_{restore_best}&#34;,
+            mode=(&#34;min&#34; if restore_best==&#34;loss&#34; else &#34;max&#34;))
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.transductive = (mode == &#34;transductive&#34;)
+        self.sampling = sampling
+        self.sampling_neighbors = sampling_neighbors
+        self.batch_size = batch_size
+        self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
+        self.early_stopping_patience = early_stopping_patience
+        self.max_epochs = max_epochs
+
+        self.final_metrics = {}
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        for i, layer in enumerate(self.layers):
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            if i &lt; len(self.layers)-1:
+                x = F.elu(x)
+        return F.log_softmax(x, dim=1)
+
+    def training_step(self, data, batch_idx):
+        mask = (data.train_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log(&#34;train_loss&#34;, loss, batch_size=int(mask.sum()))
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        mask = (data.val_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log(&#34;val_loss&#34;, loss, batch_size=int(mask.sum()))
+        pred = out.argmax(dim=1)
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log(&#34;val_acc&#34;, acc, batch_size=int(mask.sum()))
+
+    def test_step(self, data, batch_idx):
+        mask = (data.test_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log(&#34;test_acc&#34;, acc, batch_size=int(mask.sum()))
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset=None, use_gpu=False):
+        &#34;&#34;&#34;Automated training of this model.&#34;
+        &#34;&#34;&#34;
+        self._init_trainer(use_gpu)
+        if val_dataset is None:
+            assert self.transductive
+            val_dataset = train_dataset
+        if self.transductive:
+            assert len(train_dataset) == 1
+        train_loader = (torch_geometric.loader.NeighborLoader(
+                train_dataset[0],
+                num_neighbors=[self.sampling_neighbors]*len(self.layers),
+                batch_size=self.batch_size,
+                num_workers=self.loader_num_workers) 
+            if self.sampling
+            else torch_geometric.loader.DataLoader(train_dataset,
+                                                   batch_size=self.batch_size,
+                                                   num_workers=self.loader_num_workers))
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       batch_size=self.batch_size,
+                                                       num_workers=self.loader_num_workers)
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+        self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+        self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch
+
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+        &#34;&#34;&#34;
+        assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+        dataloader = torch_geometric.loader.DataLoader(dataset)
+        self.trainer.test(self, dataloader)
+        self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
+            modes=[&#34;max&#34;,&#34;min&#34;],
+            patience=self.early_stopping_patience,
+            verbose=False
+        )
+        trainer_args = {&#34;max_epochs&#34;: self.max_epochs,
+                        &#34;log_every_n_steps&#34;: 1,
+                        &#34;callbacks&#34;: [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args[&#34;gpus&#34;] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)
+
+
+class CustomGraphClassifier(AbstractModel):
+    &#34;&#34;&#34;A configurable *graph* classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_attention_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    num_mlp_hidden_layers: int, optional
+        How many hidden layers to use in the final aggregation MLP. Defaults
+        to 1.
+    mlp_hidden_layer_dims = Optional[int or List[int]], optional
+        Width of each hidden layer in the final MLP. If None, the dimension of
+        the output of the final attention layer is used. Defaults to None.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in [&#34;loss&#34;, &#34;acc&#34;] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to &#34;loss&#34;.
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch. Defaults to 128.
+    pooling : str, optional
+        String in [&#34;mean&#34;, &#34;sum&#34;, &#34;max&#34;] specifying what type of global pooling
+        operation should be applied after the final attention layer. Defaults
+        to &#34;mean&#34;.
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    cast_to_float: bool, optional
+        Whether to forcibly convert each node&#39;s feature vector into a tensor
+        of floats before processing. May be necessary on some datasets.
+        Defaults to False.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 5.
+    metric: str, optional
+        String in [&#34;accuracy&#34;, &#34;roc_auc_score&#34;] specifying what quantity should
+        be used to measure the success of the model. The callback metrics
+        &#34;val_acc&#34; and &#34;test_acc&#34; will refer to this quantity even if accuracy
+        isn&#39;t used as the metric. Defaults to &#34;accuracy&#34;.
+    add_pos: bool, optional
+        Whether to include the `pos` attribute of a node in its feature
+        vector. Applicable to MNIST and CIFAR10 datasets. Defaults to False.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    &#34;&#34;&#34;
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_attention_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            num_mlp_hidden_layers: int = 1,
+            mlp_hidden_layer_dims: Optional[Union[int, List[int]]] = None,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = &#34;loss&#34;,
+            batch_size: int = 128,
+            pooling: str = &#34;mean&#34;,
+            loader_num_workers: int = 0,
+            cast_to_float = False,
+            early_stopping_patience: int = 5,
+            metric: str = &#34;accuracy&#34;,
+            add_pos: bool = False,
+            max_epochs: int = 2000,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_attention_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*num_attention_layers
+        if mlp_hidden_layer_dims is None:
+            mlp_hidden_layer_dims = hidden_feature_dims[-1]
+        if isinstance(mlp_hidden_layer_dims, int):
+            mlp_hidden_layer_dims = [mlp_hidden_layer_dims]*num_mlp_hidden_layers
+        assert len(heads_per_layer) == num_attention_layers
+        assert len(hidden_feature_dims) == num_attention_layers
+        assert len(mlp_hidden_layer_dims) == num_mlp_hidden_layers
+        assert restore_best in [&#34;loss&#34;, &#34;acc&#34;]
+        assert pooling in [&#34;mean&#34;, &#34;max&#34;, &#34;sum&#34;]
+        assert metric in [&#34;accuracy&#34;, &#34;roc_auc_score&#34;]
+        if metric == &#34;roc_auc_score&#34;:
+            assert num_classes == 2
+
+        self.attention_layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=hidden_feature_dims[i],
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_attention_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_attention_layers)])
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(hidden_feature_dims[-1],
+                            mlp_hidden_layer_dims[0]),
+            *[layer for i in range(num_mlp_hidden_layers)
+                    for layer in (torch.nn.ReLU(),
+                                  torch.nn.Linear(mlp_hidden_layer_dims[i],
+                                                  (num_classes
+                                                   if i == num_mlp_hidden_layers-1
+                                                   else mlp_hidden_layer_dims[i+1])))
+             ])
+        self.pool = {
+            &#34;mean&#34;: torch_geometric.nn.global_mean_pool,
+            &#34;max&#34;: torch_geometric.nn.global_max_pool,
+            &#34;sum&#34;: torch_geometric.nn.global_add_pool,
+        }[pooling]
+
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f&#34;val_{restore_best}&#34;,
+            mode=(&#34;min&#34; if restore_best==&#34;loss&#34; else &#34;max&#34;),
+            save_weights_only=True)
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.batch_size = batch_size
+        self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
+        self.cast_to_float = cast_to_float
+        self.early_stopping_patience = early_stopping_patience
+        self.use_roc = (metric == &#34;roc_auc_score&#34;)
+        self.add_pos = add_pos
+        self.max_epochs = max_epochs
+        
+        self.final_metrics = {}
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        if self.add_pos: # For MNIST/CIFAR
+            x = torch.cat([x, data.pos], dim=-1)
+        if self.cast_to_float:
+            x = x.float()
+        for layer in self.attention_layers:
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            x = F.elu(x)
+        out = self.pool(x, batch=data.batch)
+        out = self.mlp(out)
+        return F.log_softmax(out, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log(&#34;train_loss&#34;, loss, batch_size=data.num_graphs)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log(&#34;val_loss&#34;, loss, batch_size=data.num_graphs)
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
+        self.log(&#34;val_acc&#34;, acc, batch_size=data.num_graphs)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
+        self.log(&#34;test_acc&#34;, acc, batch_size=data.num_graphs)
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset, use_gpu=False):
+        &#34;&#34;&#34;Automated training of this model.&#34;
+        &#34;&#34;&#34;
+        self._init_trainer(use_gpu)
+        train_loader = torch_geometric.loader.DataLoader(train_dataset,
+                                                         batch_size=self.batch_size,
+                                                         num_workers=self.loader_num_workers,
+                                                         shuffle=True)
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       num_workers=self.loader_num_workers,
+                                                       batch_size=val_dataset.len())
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+        self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+        self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch
+
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+        &#34;&#34;&#34;
+        assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+        dataloader = torch_geometric.loader.DataLoader(dataset, batch_size=dataset.len())
+        self.trainer.test(self, dataloader)
+        self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
+            modes=[&#34;max&#34;,&#34;min&#34;],
+            patience=self.early_stopping_patience,
+            verbose=False
+        )
+        trainer_args = {&#34;max_epochs&#34;: self.max_epochs,
+                        &#34;log_every_n_steps&#34;: 1,
+                        &#34;callbacks&#34;: [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args[&#34;gpus&#34;] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)</code></pre>
 </details>
 </section>
 <section>
@@ -364,6 +902,8 @@ automate the training and testing in some standard way.</p></div>
 </ul>
 <h3>Subclasses</h3>
 <ul class="hlist">
+<li><a title="oxgat.models.CustomGraphClassifier" href="#oxgat.models.CustomGraphClassifier">CustomGraphClassifier</a></li>
+<li><a title="oxgat.models.CustomNodeClassifier" href="#oxgat.models.CustomNodeClassifier">CustomNodeClassifier</a></li>
 <li>oxgat.models._BaseGATModel</li>
 </ul>
 <h3>Class variables</h3>
@@ -505,9 +1045,853 @@ def validation_step(self, data, batch_idx):
 </dd>
 </dl>
 </dd>
+<dt id="oxgat.models.CustomGraphClassifier"><code class="flex name class">
+<span>class <span class="ident">CustomGraphClassifier</span></span>
+<span>(</span><span>in_features: int, num_classes: int, num_attention_layers: int = 2, heads_per_layer: Union[int, List[int]] = [8, 1], hidden_feature_dims: Union[int, List[int]] = 8, layer_type: Type[torch.nn.modules.module.Module] = oxgat.components.MultiHeadAttentionLayer, attention_type: Type[<a title="oxgat.components.AbstractAttentionHead" href="components.html#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a>] = oxgat.components.GATAttentionHead, num_mlp_hidden_layers: int = 1, mlp_hidden_layer_dims: Union[int, List[int], NoneType] = None, dropout: float = 0.6, learning_rate: float = 0.005, regularisation: float = 0.0005, restore_best: str = 'loss', batch_size: int = 128, pooling: str = 'mean', loader_num_workers: int = 0, cast_to_float=False, early_stopping_patience: int = 5, metric: str = 'accuracy', add_pos: bool = False, max_epochs: int = 2000, **kwargs)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A configurable <em>graph</em> classification model for use in the benchmark experiments.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of features per node in the input data.</dd>
+<dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of classes for node classification.</dd>
+<dt><strong><code>num_attention_layers</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>How many attention layers to use, defaults to 2.</dd>
+<dt><strong><code>heads_per_layer</code></strong> :&ensp;<code>int</code> or <code>List[int]</code>, optional</dt>
+<dd>How many attention heads to use per layer, defaults to [8,1].</dd>
+<dt><strong><code>hidden_feature_dims</code></strong> :&ensp;<code>int</code> or <code>List[int]</code>, optional</dt>
+<dd>What the feature dimensions should be between the attention layers.
+Defaults to 8.</dd>
+<dt><strong><code>layer_type</code></strong> :&ensp;<code>Type[torch.nn.Module]</code>, optional</dt>
+<dd>What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.</dd>
+<dt><strong><code>attention_type</code></strong> :&ensp;<code>Type[components.AbstractAttentionHead]</code>, optional</dt>
+<dd>What type of attention head to use within each layer, defaults to GATAttentionHead.</dd>
+<dt><strong><code>num_mlp_hidden_layers</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>How many hidden layers to use in the final aggregation MLP. Defaults
+to 1.</dd>
+<dt>mlp_hidden_layer_dims = Optional[int or List[int]], optional</dt>
+<dt>Width of each hidden layer in the final MLP. If None, the dimension of</dt>
+<dt>the output of the final attention layer is used. Defaults to None.</dt>
+<dt><strong><code>dropout</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>Probabilistic training dropout to apply to attention calculation
+and feature updates. Defaults to 0.6.</dd>
+<dt><strong><code>learning_rate</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>Learning rate for the Adam optimizer, defaults to 0.005.</dd>
+<dt><strong><code>regularisation</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>L2-regularisation coefficient, defaults to 0.0005.</dd>
+<dt><strong><code>restore_best</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["loss", "acc"] specifying whether to at the end of trianing
+restore the model weights giving the best validation <em>loss</em> or <em>score</em>.
+Defaults to "loss".</dd>
+<dt><strong><code>batch_size</code></strong> :&ensp;<code>Optional[int]</code>, optional</dt>
+<dd>Number of graphs in a training/testing batch. Defaults to 128.</dd>
+<dt><strong><code>pooling</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["mean", "sum", "max"] specifying what type of global pooling
+operation should be applied after the final attention layer. Defaults
+to "mean".</dd>
+<dt><strong><code>loader_num_workers</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>Number of CPU workers to use for loading data. If using GPU, this should
+be set to 0. Defaults to 0.</dd>
+<dt><strong><code>cast_to_float</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to forcibly convert each node's feature vector into a tensor
+of floats before processing. May be necessary on some datasets.
+Defaults to False.</dd>
+<dt><strong><code>early_stopping_patience</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>How many epochs to wait before stopping training if the model does not
+improve in loss or accuracy on the validation set. Defaults to 5.</dd>
+<dt><strong><code>metric</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["accuracy", "roc_auc_score"] specifying what quantity should
+be used to measure the success of the model. The callback metrics
+"val_acc" and "test_acc" will refer to this quantity even if accuracy
+isn't used as the metric. Defaults to "accuracy".</dd>
+<dt><strong><code>add_pos</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to include the <code>pos</code> attribute of a node in its feature
+vector. Applicable to MNIST and CIFAR10 datasets. Defaults to False.</dd>
+<dt><strong><code>max_epochs</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>Number of epochs to stop after no matter what. Defaults to 2000.</dd>
+<dt><strong><code>**kwargs</code></strong>, <strong><code>optional</code></strong></dt>
+<dd>Ketword arguments to be supplied to the attention layers.</dd>
+</dl>
+<h2 id="attributes">Attributes</h2>
+<dl>
+<dt><strong><code>final_metrics</code></strong> :&ensp;<code>dict</code></dt>
+<dd>After training and/or testing is completed this attribute will contain
+a dictionary of metrics from the training and testing procedures.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class CustomGraphClassifier(AbstractModel):
+    &#34;&#34;&#34;A configurable *graph* classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_attention_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    num_mlp_hidden_layers: int, optional
+        How many hidden layers to use in the final aggregation MLP. Defaults
+        to 1.
+    mlp_hidden_layer_dims = Optional[int or List[int]], optional
+        Width of each hidden layer in the final MLP. If None, the dimension of
+        the output of the final attention layer is used. Defaults to None.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in [&#34;loss&#34;, &#34;acc&#34;] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to &#34;loss&#34;.
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch. Defaults to 128.
+    pooling : str, optional
+        String in [&#34;mean&#34;, &#34;sum&#34;, &#34;max&#34;] specifying what type of global pooling
+        operation should be applied after the final attention layer. Defaults
+        to &#34;mean&#34;.
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    cast_to_float: bool, optional
+        Whether to forcibly convert each node&#39;s feature vector into a tensor
+        of floats before processing. May be necessary on some datasets.
+        Defaults to False.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 5.
+    metric: str, optional
+        String in [&#34;accuracy&#34;, &#34;roc_auc_score&#34;] specifying what quantity should
+        be used to measure the success of the model. The callback metrics
+        &#34;val_acc&#34; and &#34;test_acc&#34; will refer to this quantity even if accuracy
+        isn&#39;t used as the metric. Defaults to &#34;accuracy&#34;.
+    add_pos: bool, optional
+        Whether to include the `pos` attribute of a node in its feature
+        vector. Applicable to MNIST and CIFAR10 datasets. Defaults to False.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    &#34;&#34;&#34;
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_attention_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            num_mlp_hidden_layers: int = 1,
+            mlp_hidden_layer_dims: Optional[Union[int, List[int]]] = None,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = &#34;loss&#34;,
+            batch_size: int = 128,
+            pooling: str = &#34;mean&#34;,
+            loader_num_workers: int = 0,
+            cast_to_float = False,
+            early_stopping_patience: int = 5,
+            metric: str = &#34;accuracy&#34;,
+            add_pos: bool = False,
+            max_epochs: int = 2000,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_attention_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*num_attention_layers
+        if mlp_hidden_layer_dims is None:
+            mlp_hidden_layer_dims = hidden_feature_dims[-1]
+        if isinstance(mlp_hidden_layer_dims, int):
+            mlp_hidden_layer_dims = [mlp_hidden_layer_dims]*num_mlp_hidden_layers
+        assert len(heads_per_layer) == num_attention_layers
+        assert len(hidden_feature_dims) == num_attention_layers
+        assert len(mlp_hidden_layer_dims) == num_mlp_hidden_layers
+        assert restore_best in [&#34;loss&#34;, &#34;acc&#34;]
+        assert pooling in [&#34;mean&#34;, &#34;max&#34;, &#34;sum&#34;]
+        assert metric in [&#34;accuracy&#34;, &#34;roc_auc_score&#34;]
+        if metric == &#34;roc_auc_score&#34;:
+            assert num_classes == 2
+
+        self.attention_layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=hidden_feature_dims[i],
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_attention_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_attention_layers)])
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(hidden_feature_dims[-1],
+                            mlp_hidden_layer_dims[0]),
+            *[layer for i in range(num_mlp_hidden_layers)
+                    for layer in (torch.nn.ReLU(),
+                                  torch.nn.Linear(mlp_hidden_layer_dims[i],
+                                                  (num_classes
+                                                   if i == num_mlp_hidden_layers-1
+                                                   else mlp_hidden_layer_dims[i+1])))
+             ])
+        self.pool = {
+            &#34;mean&#34;: torch_geometric.nn.global_mean_pool,
+            &#34;max&#34;: torch_geometric.nn.global_max_pool,
+            &#34;sum&#34;: torch_geometric.nn.global_add_pool,
+        }[pooling]
+
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f&#34;val_{restore_best}&#34;,
+            mode=(&#34;min&#34; if restore_best==&#34;loss&#34; else &#34;max&#34;),
+            save_weights_only=True)
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.batch_size = batch_size
+        self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
+        self.cast_to_float = cast_to_float
+        self.early_stopping_patience = early_stopping_patience
+        self.use_roc = (metric == &#34;roc_auc_score&#34;)
+        self.add_pos = add_pos
+        self.max_epochs = max_epochs
+        
+        self.final_metrics = {}
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        if self.add_pos: # For MNIST/CIFAR
+            x = torch.cat([x, data.pos], dim=-1)
+        if self.cast_to_float:
+            x = x.float()
+        for layer in self.attention_layers:
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            x = F.elu(x)
+        out = self.pool(x, batch=data.batch)
+        out = self.mlp(out)
+        return F.log_softmax(out, dim=1)
+
+    def training_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log(&#34;train_loss&#34;, loss, batch_size=data.num_graphs)
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        out = self(data)
+        loss = F.nll_loss(out, data.y.flatten())
+        self.log(&#34;val_loss&#34;, loss, batch_size=data.num_graphs)
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
+        self.log(&#34;val_acc&#34;, acc, batch_size=data.num_graphs)
+
+    def test_step(self, data, batch_idx):
+        out = self(data)
+        if self.use_roc:
+            acc = roc_auc_score(data.y.flatten().cpu(), out[...,1].cpu())
+        else:
+            pred = out.argmax(dim=1)
+            correct = (pred == data.y.flatten()).sum()
+            acc = int(correct) / data.num_graphs
+        self.log(&#34;test_acc&#34;, acc, batch_size=data.num_graphs)
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset, use_gpu=False):
+        &#34;&#34;&#34;Automated training of this model.&#34;
+        &#34;&#34;&#34;
+        self._init_trainer(use_gpu)
+        train_loader = torch_geometric.loader.DataLoader(train_dataset,
+                                                         batch_size=self.batch_size,
+                                                         num_workers=self.loader_num_workers,
+                                                         shuffle=True)
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       num_workers=self.loader_num_workers,
+                                                       batch_size=val_dataset.len())
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+        self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+        self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch
+
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+        &#34;&#34;&#34;
+        assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+        dataloader = torch_geometric.loader.DataLoader(dataset, batch_size=dataset.len())
+        self.trainer.test(self, dataloader)
+        self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
+            modes=[&#34;max&#34;,&#34;min&#34;],
+            patience=self.early_stopping_patience,
+            verbose=False
+        )
+        trainer_args = {&#34;max_epochs&#34;: self.max_epochs,
+                        &#34;log_every_n_steps&#34;: 1,
+                        &#34;callbacks&#34;: [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args[&#34;gpus&#34;] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></li>
+<li>pytorch_lightning.core.lightning.LightningModule</li>
+<li>pytorch_lightning.core.mixins.device_dtype_mixin.DeviceDtypeModuleMixin</li>
+<li>pytorch_lightning.core.mixins.hparams_mixin.HyperparametersMixin</li>
+<li>pytorch_lightning.core.saving.ModelIO</li>
+<li>pytorch_lightning.core.hooks.ModelHooks</li>
+<li>pytorch_lightning.core.hooks.DataHooks</li>
+<li>pytorch_lightning.core.hooks.CheckpointHooks</li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.models.CustomGraphClassifier.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.models.CustomGraphClassifier.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="oxgat.models.CustomGraphClassifier.standard_test"><code class="name flex">
+<span>def <span class="ident">standard_test</span></span>(<span>self, dataset)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Method to test this model after having run <code>self.standard_train()</code>.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def standard_test(self, dataset):
+    &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+    &#34;&#34;&#34;
+    assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+    dataloader = torch_geometric.loader.DataLoader(dataset, batch_size=dataset.len())
+    self.trainer.test(self, dataloader)
+    self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.CustomGraphClassifier.standard_train"><code class="name flex">
+<span>def <span class="ident">standard_train</span></span>(<span>self, train_dataset, val_dataset, use_gpu=False)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Automated training of this model."</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def standard_train(self, train_dataset, val_dataset, use_gpu=False):
+    &#34;&#34;&#34;Automated training of this model.&#34;
+    &#34;&#34;&#34;
+    self._init_trainer(use_gpu)
+    train_loader = torch_geometric.loader.DataLoader(train_dataset,
+                                                     batch_size=self.batch_size,
+                                                     num_workers=self.loader_num_workers,
+                                                     shuffle=True)
+    val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                   num_workers=self.loader_num_workers,
+                                                   batch_size=val_dataset.len())
+    self.trainer.fit(self,
+                     train_dataloaders=train_loader,
+                     val_dataloaders=val_loader)
+    # Restore best weights and validate
+    self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+    self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+    self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+    self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+    self.trainer = pl.Trainer(**self.trainer_args)
+    self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+    self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+    self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+    self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.models.AbstractModel.configure_optimizers" href="#oxgat.models.AbstractModel.configure_optimizers">configure_optimizers</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.forward" href="#oxgat.models.AbstractModel.forward">forward</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.test_step" href="#oxgat.models.AbstractModel.test_step">test_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="oxgat.models.CustomNodeClassifier"><code class="flex name class">
+<span>class <span class="ident">CustomNodeClassifier</span></span>
+<span>(</span><span>in_features: int, num_classes: int, num_layers: int = 2, heads_per_layer: Union[int, List[int]] = [8, 1], hidden_feature_dims: Union[int, List[int]] = 8, layer_type: Type[torch.nn.modules.module.Module] = oxgat.components.MultiHeadAttentionLayer, attention_type: Type[<a title="oxgat.components.AbstractAttentionHead" href="components.html#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a>] = oxgat.components.GATAttentionHead, dropout: float = 0.6, learning_rate: float = 0.005, regularisation: float = 0.0005, restore_best: str = 'loss', batch_size: Optional[int] = None, mode: str = 'transductive', sampling: bool = False, sampling_neighbors: int = -1, loader_num_workers: int = 0, early_stopping_patience: int = 100, max_epochs: int = 2000, **kwargs)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>A configurable node classification model for use in the benchmark experiments.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of features per node in the input data.</dd>
+<dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
+<dd>The number of classes for node classification.</dd>
+<dt><strong><code>num_layers</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>How many attention layers to use, defaults to 2.</dd>
+<dt><strong><code>heads_per_layer</code></strong> :&ensp;<code>int</code> or <code>List[int]</code>, optional</dt>
+<dd>How many attention heads to use per layer, defaults to [8,1].</dd>
+<dt><strong><code>hidden_feature_dims</code></strong> :&ensp;<code>int</code> or <code>List[int]</code>, optional</dt>
+<dd>What the feature dimensions should be between the attention layers.
+Defaults to 8.</dd>
+<dt><strong><code>layer_type</code></strong> :&ensp;<code>Type[torch.nn.Module]</code>, optional</dt>
+<dd>What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.</dd>
+<dt><strong><code>attention_type</code></strong> :&ensp;<code>Type[components.AbstractAttentionHead]</code>, optional</dt>
+<dd>What type of attention head to use within each layer, defaults to GATAttentionHead.</dd>
+<dt><strong><code>dropout</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>Probabilistic training dropout to apply to attention calculation
+and feature updates. Defaults to 0.6.</dd>
+<dt><strong><code>learning_rate</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>Learning rate for the Adam optimizer, defaults to 0.005.</dd>
+<dt><strong><code>regularisation</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>L2-regularisation coefficient, defaults to 0.0005.</dd>
+<dt><strong><code>restore_best</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["loss", "acc"] specifying whether to at the end of trianing
+restore the model weights giving the best validation <em>loss</em> or <em>score</em>.
+Defaults to "loss".</dd>
+<dt><strong><code>batch_size</code></strong> :&ensp;<code>Optional[int]</code>, optional</dt>
+<dd>Number of graphs in a training/testing batch, if inductive classification,
+or number of subgraphs in a training/testing batch, if transductive
+classification and sampling is enabled. If transductive classification
+and sampling is disabled this should always be 1. Defaults to None, which
+will use 128 graphs/subgraphs in a batch if relevant.</dd>
+<dt><strong><code>mode</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["transductive", "inductive"] specifying whether the given
+task will be transductive or inductive node classification. If
+"transductive" the provided data is assumed to have <code>train_mask</code>,
+<code>val_mask</code> and <code>test_mask</code> attributes.Defaults to "transductive".</dd>
+<dt><strong><code>sampling</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>Whether to use sampling to load batches of subgraphs instead of entire
+graphs during training. May help with memory usage. Defaults to False.</dd>
+<dt><strong><code>sampling_neighbors</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>If sampling is enabled, this specifies how many neighbours of a node
+should be sampled at each step. If -1, all neighbours will be sampled.
+Defaults to -1.</dd>
+<dt><strong><code>loader_num_workers</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>Number of CPU workers to use for loading data. If using GPU, this should
+be set to 0. Defaults to 0.</dd>
+<dt><strong><code>early_stopping_patience</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>How many epochs to wait before stopping training if the model does not
+improve in loss or accuracy on the validation set. Defaults to 100.</dd>
+<dt><strong><code>max_epochs</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>Number of epochs to stop after no matter what. Defaults to 2000.</dd>
+<dt><strong><code>**kwargs</code></strong>, <strong><code>optional</code></strong></dt>
+<dd>Ketword arguments to be supplied to the attention layers.</dd>
+</dl>
+<h2 id="attributes">Attributes</h2>
+<dl>
+<dt><strong><code>final_metrics</code></strong> :&ensp;<code>dict</code></dt>
+<dd>After training and/or testing is completed this attribute will contain
+a dictionary of metrics from the training and testing procedures.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class CustomNodeClassifier(AbstractModel):
+    &#34;&#34;&#34;A configurable node classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in [&#34;loss&#34;, &#34;acc&#34;] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to &#34;loss&#34;.
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch, if inductive classification,
+        or number of subgraphs in a training/testing batch, if transductive
+        classification and sampling is enabled. If transductive classification
+        and sampling is disabled this should always be 1. Defaults to None, which
+        will use 128 graphs/subgraphs in a batch if relevant.
+    mode : str, optional
+        String in [&#34;transductive&#34;, &#34;inductive&#34;] specifying whether the given
+        task will be transductive or inductive node classification. If
+        &#34;transductive&#34; the provided data is assumed to have `train_mask`,
+        `val_mask` and `test_mask` attributes.Defaults to &#34;transductive&#34;.
+    sampling : str, optional
+        Whether to use sampling to load batches of subgraphs instead of entire
+        graphs during training. May help with memory usage. Defaults to False.
+    sampling_neighbors: int, optional
+        If sampling is enabled, this specifies how many neighbours of a node
+        should be sampled at each step. If -1, all neighbours will be sampled.
+        Defaults to -1.
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 100.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    &#34;&#34;&#34;
+    def __init__(
+            self,
+            in_features: int,
+            num_classes: int,
+            num_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
+            layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
+            attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
+            dropout: float = 0.6,
+            learning_rate: float = 0.005,
+            regularisation: float = 0.0005,
+            restore_best: str = &#34;loss&#34;,
+            batch_size: Optional[int] = None,
+            mode: str = &#34;transductive&#34;,
+            sampling: bool = False,
+            sampling_neighbors: int = -1, # All
+            loader_num_workers: int = 0,
+            early_stopping_patience: int = 100,
+            max_epochs: int = 2000,
+            **kwargs):
+        super().__init__()
+        if isinstance(heads_per_layer, int):
+            heads_per_layer = [heads_per_layer]*num_layers
+        if isinstance(hidden_feature_dims, int):
+            hidden_feature_dims = [hidden_feature_dims]*(num_layers-1)
+        if batch_size is None:
+            batch_size = 128 if sampling else 1
+        assert len(heads_per_layer) == num_layers
+        assert len(hidden_feature_dims) == num_layers-1
+        assert restore_best in [&#34;loss&#34;, &#34;acc&#34;]
+        assert mode in [&#34;transductive&#34;, &#34;inductive&#34;]
+        if sampling:
+            assert mode == &#34;transductive&#34;
+
+        self.layers = torch.nn.ModuleList([
+            layer_type(attention_type=attention_type,
+                       in_features=(in_features if i==0
+                                    else heads_per_layer[i-1]*
+                                        hidden_feature_dims[i-1]),
+                       out_features=(num_classes if i==num_layers-1
+                                     else hidden_feature_dims[i]),
+                       num_heads=heads_per_layer[i],
+                       is_final_layer=(i==num_layers-1),
+                       attention_dropout=dropout,
+                       **kwargs)
+            for i in range(num_layers)])
+
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=f&#34;val_{restore_best}&#34;,
+            mode=(&#34;min&#34; if restore_best==&#34;loss&#34; else &#34;max&#34;))
+        self.learning_rate = learning_rate
+        self.regularisation = regularisation
+        self.transductive = (mode == &#34;transductive&#34;)
+        self.sampling = sampling
+        self.sampling_neighbors = sampling_neighbors
+        self.batch_size = batch_size
+        self.dropout=dropout
+        self.loader_num_workers = loader_num_workers
+        self.early_stopping_patience = early_stopping_patience
+        self.max_epochs = max_epochs
+
+        self.final_metrics = {}
+        
+    def forward(self, data):
+        x, edge_index = data.x, data.edge_index
+        for i, layer in enumerate(self.layers):
+            x = F.dropout(x, p=self.dropout, training=self.training)
+            x = layer(x, edge_index)
+            if i &lt; len(self.layers)-1:
+                x = F.elu(x)
+        return F.log_softmax(x, dim=1)
+
+    def training_step(self, data, batch_idx):
+        mask = (data.train_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log(&#34;train_loss&#34;, loss, batch_size=int(mask.sum()))
+        return loss
+
+    def validation_step(self, data, batch_idx):
+        mask = (data.val_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        loss = F.nll_loss(out[mask], data.y[mask])
+        self.log(&#34;val_loss&#34;, loss, batch_size=int(mask.sum()))
+        pred = out.argmax(dim=1)
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log(&#34;val_acc&#34;, acc, batch_size=int(mask.sum()))
+
+    def test_step(self, data, batch_idx):
+        mask = (data.test_mask if self.transductive
+                else torch.ones(data.num_nodes, dtype=torch.bool))
+        out = self(data)
+        pred = out.argmax(dim=1)
+        correct = (pred[mask] == data.y[mask]).sum()
+        acc = int(correct) / int(mask.sum())
+        self.log(&#34;test_acc&#34;, acc, batch_size=int(mask.sum()))
+        
+    def configure_optimizers(self):
+        return torch.optim.Adam(self.parameters(),
+                                lr=self.learning_rate,
+                                weight_decay=self.regularisation)
+
+    def standard_train(self, train_dataset, val_dataset=None, use_gpu=False):
+        &#34;&#34;&#34;Automated training of this model.&#34;
+        &#34;&#34;&#34;
+        self._init_trainer(use_gpu)
+        if val_dataset is None:
+            assert self.transductive
+            val_dataset = train_dataset
+        if self.transductive:
+            assert len(train_dataset) == 1
+        train_loader = (torch_geometric.loader.NeighborLoader(
+                train_dataset[0],
+                num_neighbors=[self.sampling_neighbors]*len(self.layers),
+                batch_size=self.batch_size,
+                num_workers=self.loader_num_workers) 
+            if self.sampling
+            else torch_geometric.loader.DataLoader(train_dataset,
+                                                   batch_size=self.batch_size,
+                                                   num_workers=self.loader_num_workers))
+        val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                       batch_size=self.batch_size,
+                                                       num_workers=self.loader_num_workers)
+        self.trainer.fit(self,
+                         train_dataloaders=train_loader,
+                         val_dataloaders=val_loader)
+        # Restore best weights and validate
+        self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+        self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+        self.trainer = pl.Trainer(**self.trainer_args)
+        self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+        self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+        self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+        self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch
+
+    def standard_test(self, dataset):
+        &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+        &#34;&#34;&#34;
+        assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+        dataloader = torch_geometric.loader.DataLoader(dataset)
+        self.trainer.test(self, dataloader)
+        self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])
+
+    # Initialize the trainer for use in self.train()
+    def _init_trainer(self, use_gpu):
+        # Stop training only if neither validation loss nor accuracy has
+        # improved in last 100 epochs.
+        progress_bar = pl.callbacks.RichProgressBar()
+        early_stopping = utils.MultipleEarlyStopping(
+            monitors=[&#34;val_acc&#34;,&#34;val_loss&#34;],
+            modes=[&#34;max&#34;,&#34;min&#34;],
+            patience=self.early_stopping_patience,
+            verbose=False
+        )
+        trainer_args = {&#34;max_epochs&#34;: self.max_epochs,
+                        &#34;log_every_n_steps&#34;: 1,
+                        &#34;callbacks&#34;: [early_stopping,
+                                      self.checkpointer,
+                                      progress_bar]}
+        if use_gpu:
+            trainer_args[&#34;gpus&#34;] = 1
+        self.trainer_args = trainer_args
+        self.trainer = pl.Trainer(**trainer_args)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></li>
+<li>pytorch_lightning.core.lightning.LightningModule</li>
+<li>pytorch_lightning.core.mixins.device_dtype_mixin.DeviceDtypeModuleMixin</li>
+<li>pytorch_lightning.core.mixins.hparams_mixin.HyperparametersMixin</li>
+<li>pytorch_lightning.core.saving.ModelIO</li>
+<li>pytorch_lightning.core.hooks.ModelHooks</li>
+<li>pytorch_lightning.core.hooks.DataHooks</li>
+<li>pytorch_lightning.core.hooks.CheckpointHooks</li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.models.CustomNodeClassifier.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.models.CustomNodeClassifier.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="oxgat.models.CustomNodeClassifier.standard_test"><code class="name flex">
+<span>def <span class="ident">standard_test</span></span>(<span>self, dataset)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Method to test this model after having run <code>self.standard_train()</code>.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def standard_test(self, dataset):
+    &#34;&#34;&#34;Method to test this model after having run `self.standard_train()`.
+    &#34;&#34;&#34;
+    assert self.trainer is not None, &#34;Must run `self.standard_train()` first.&#34;
+    dataloader = torch_geometric.loader.DataLoader(dataset)
+    self.trainer.test(self, dataloader)
+    self.final_metrics[&#34;test_acc&#34;] = float(self.trainer.callback_metrics[&#34;test_acc&#34;])</code></pre>
+</details>
+</dd>
+<dt id="oxgat.models.CustomNodeClassifier.standard_train"><code class="name flex">
+<span>def <span class="ident">standard_train</span></span>(<span>self, train_dataset, val_dataset=None, use_gpu=False)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Automated training of this model."</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def standard_train(self, train_dataset, val_dataset=None, use_gpu=False):
+    &#34;&#34;&#34;Automated training of this model.&#34;
+    &#34;&#34;&#34;
+    self._init_trainer(use_gpu)
+    if val_dataset is None:
+        assert self.transductive
+        val_dataset = train_dataset
+    if self.transductive:
+        assert len(train_dataset) == 1
+    train_loader = (torch_geometric.loader.NeighborLoader(
+            train_dataset[0],
+            num_neighbors=[self.sampling_neighbors]*len(self.layers),
+            batch_size=self.batch_size,
+            num_workers=self.loader_num_workers) 
+        if self.sampling
+        else torch_geometric.loader.DataLoader(train_dataset,
+                                               batch_size=self.batch_size,
+                                               num_workers=self.loader_num_workers))
+    val_loader = torch_geometric.loader.DataLoader(val_dataset,
+                                                   batch_size=self.batch_size,
+                                                   num_workers=self.loader_num_workers)
+    self.trainer.fit(self,
+                     train_dataloaders=train_loader,
+                     val_dataloaders=val_loader)
+    # Restore best weights and validate
+    self.final_metrics[&#34;end_train_loss&#34;] = float(self.trainer.callback_metrics[&#34;train_loss&#34;])
+    self.final_metrics[&#34;end_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+    self.final_metrics[&#34;end_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+    self.final_metrics[&#34;epochs_trained&#34;] = self.current_epoch+1
+    self.trainer = pl.Trainer(**self.trainer_args)
+    self.trainer.validate(self, val_loader, ckpt_path=&#34;best&#34;)
+    self.final_metrics[&#34;restored_val_loss&#34;] = float(self.trainer.callback_metrics[&#34;val_loss&#34;])
+    self.final_metrics[&#34;restored_val_acc&#34;] = float(self.trainer.callback_metrics[&#34;val_acc&#34;])
+    self.final_metrics[&#34;restored_epoch_number&#34;] = self.current_epoch</code></pre>
+</details>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.models.AbstractModel" href="#oxgat.models.AbstractModel">AbstractModel</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.models.AbstractModel.configure_optimizers" href="#oxgat.models.AbstractModel.configure_optimizers">configure_optimizers</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.forward" href="#oxgat.models.AbstractModel.forward">forward</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.test_step" href="#oxgat.models.AbstractModel.test_step">test_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
+<li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
 <dt id="oxgat.models.InductiveGATModel"><code class="flex name class">
 <span>class <span class="ident">InductiveGATModel</span></span>
-<span>(</span><span>in_features: int, num_classes: int, sparse: bool = True)</span>
+<span>(</span><span>in_features: int, num_classes: int, restore_loss: bool = True, **kwargs)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Implementation of the inductive model defined in the original GAT paper.</p>
@@ -517,8 +1901,10 @@ def validation_step(self, data, batch_idx):
 <dd>The number of features per node in the input data.</dd>
 <dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
 <dd>The number of classes for node classification.</dd>
-<dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>Whether to use sparse matrix operations. Defaults to <code>True</code>.</dd>
+<dt><strong><code>restore_loss</code></strong> :&ensp;<code>bool = True</code></dt>
+<dd>Whether to restore to the best loss (as opposed to score).</dd>
+<dt><strong><code>**kwargs</code></strong></dt>
+<dd>Keyword arguments to be supplied to the attention layers.</dd>
 </dl></div>
 <details class="source">
 <summary>
@@ -533,24 +1919,35 @@ def validation_step(self, data, batch_idx):
         The number of features per node in the input data.
     num_classes : int
         The number of classes for node classification.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+    restore_loss : bool = True
+        Whether to restore to the best loss (as opposed to score).
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     &#34;&#34;&#34;
-    def __init__(self, in_features: int, num_classes: int, sparse: bool = True):
+    def __init__(self, in_features: int, num_classes: int, restore_loss: bool = True, **kwargs):
         super().__init__(lr=0.005, train_batch_size=2)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=1024,
-                                               out_features=256,
-                                               num_heads=4,
-                                               sparse=sparse)
-        self.gat_layer_3 = components.GATLayer(in_features=1024,
-                                               out_features=num_classes,
-                                               num_heads=6,
-                                               is_final_layer=True,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=256,
+            num_heads=4,
+            **kwargs)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=256,
+            num_heads=4,
+            **kwargs)
+        self.gat_layer_3 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=1024,
+            out_features=num_classes,
+            num_heads=6,
+            is_final_layer=True,
+            **kwargs)
+        self.checkpointer = pl.callbacks.ModelCheckpoint(monitor=&#34;val_loss&#34; if restore_loss else &#34;val_acc&#34;,
+                                                         mode=&#34;min&#34; if restore_loss else &#34;max&#34;,
+                                                         save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -623,7 +2020,7 @@ def validation_step(self, data, batch_idx):
 </dd>
 <dt id="oxgat.models.TransductiveGATModel"><code class="flex name class">
 <span>class <span class="ident">TransductiveGATModel</span></span>
-<span>(</span><span>in_features: int, num_classes: int, pubmed: bool = False, sparse: bool = True)</span>
+<span>(</span><span>in_features: int, num_classes: int, pubmed: bool = False, citeseer: bool = False, **kwargs)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Implementation of the transductive model defined in the original GAT paper.</p>
@@ -634,10 +2031,14 @@ def validation_step(self, data, batch_idx):
 <dt><strong><code>num_classes</code></strong> :&ensp;<code>int</code></dt>
 <dd>The number of classes for node classification.</dd>
 <dt><strong><code>pubmed</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>Whether to apply the architecture changes made for the PubMed dataset
-in the original paper. Defaults to False.</dd>
-<dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>Whether to use sparse matrix operations. Defaults to <code>True</code>.</dd>
+<dd>Whether to apply the architecture/training changes made for the PubMed
+dataset in the original paper. Defaults to False.</dd>
+<dt><strong><code>citeseer</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to apply the architecture/training changes made for the PubMed
+dataset in the original paper. Defaults to False. Mutually exclusive
+with <code>pubmed</code>.</dd>
+<dt><strong><code>**kwargs</code></strong></dt>
+<dd>Keyword arguments to be supplied to the attention layers.</dd>
 </dl></div>
 <details class="source">
 <summary>
@@ -653,26 +2054,44 @@ in the original paper. Defaults to False.</dd>
     num_classes : int
         The number of classes for node classification.
     pubmed : bool, optional
-        Whether to apply the architecture changes made for the PubMed dataset
-        in the original paper. Defaults to False.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Defaults to `True`.
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False.
+    citeseer : bool, optional
+        Whether to apply the architecture/training changes made for the PubMed
+        dataset in the original paper. Defaults to False. Mutually exclusive
+        with `pubmed`.
+    **kwargs
+        Keyword arguments to be supplied to the attention layers.
     &#34;&#34;&#34;
     def __init__(self, in_features: int, num_classes: int,
-                 pubmed: bool = False, sparse: bool = True):
+                 pubmed: bool = False, citeseer: bool = False,
+                 **kwargs):
+        assert not (pubmed and citeseer)
         super().__init__(lr=0.01 if pubmed else 0.005,
                          regularisation=0.001 if pubmed else 0.0005)
-        self.gat_layer_1 = components.GATLayer(in_features=in_features,
-                                               out_features=8,
-                                               num_heads=8,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
-        self.gat_layer_2 = components.GATLayer(in_features=64,
-                                               out_features=num_classes,
-                                               num_heads=8 if pubmed else 1,
-                                               is_final_layer=True,
-                                               attention_dropout=0.6,
-                                               sparse=sparse)
+        self.gat_layer_1 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=in_features,
+            out_features=8,
+            num_heads=8,
+            attention_dropout=0.6,
+            **kwargs)
+        self.gat_layer_2 = components.MultiHeadAttentionLayer(
+            attention_type=components.GATAttentionHead,
+            in_features=64,
+            out_features=num_classes,
+            num_heads=8 if pubmed else 1,
+            is_final_layer=True,
+            attention_dropout=0.6,
+            **kwargs)
+        self.checkpointer = pl.callbacks.ModelCheckpoint(
+            monitor=&#34;val_acc&#34;,
+            mode=&#34;max&#34;,
+            save_weights_only=True
+        ) if citeseer else pl.callbacks.ModelCheckpoint(
+            monitor=&#34;val_loss&#34;, # Included acc in original paper for Cora
+            mode=&#34;min&#34;,
+            save_weights_only=True)
 
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -695,7 +2114,7 @@ in the original paper. Defaults to False.</dd>
         self.log(&#34;val_loss&#34;, loss)
         pred = out.argmax(dim=1)
         correct = (pred[data.val_mask] == data.y[data.val_mask]).sum()
-        acc = int(correct) / int(data.test_mask.sum())
+        acc = int(correct) / int(data.val_mask.sum())
         self.log(&#34;val_acc&#34;, acc)
 
     def test_step(self, data, batch_idx):
@@ -773,6 +2192,24 @@ in the original paper. Defaults to False.</dd>
 <li><code><a title="oxgat.models.AbstractModel.training" href="#oxgat.models.AbstractModel.training">training</a></code></li>
 <li><code><a title="oxgat.models.AbstractModel.training_step" href="#oxgat.models.AbstractModel.training_step">training_step</a></code></li>
 <li><code><a title="oxgat.models.AbstractModel.validation_step" href="#oxgat.models.AbstractModel.validation_step">validation_step</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.models.CustomGraphClassifier" href="#oxgat.models.CustomGraphClassifier">CustomGraphClassifier</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.models.CustomGraphClassifier.dump_patches" href="#oxgat.models.CustomGraphClassifier.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.models.CustomGraphClassifier.standard_test" href="#oxgat.models.CustomGraphClassifier.standard_test">standard_test</a></code></li>
+<li><code><a title="oxgat.models.CustomGraphClassifier.standard_train" href="#oxgat.models.CustomGraphClassifier.standard_train">standard_train</a></code></li>
+<li><code><a title="oxgat.models.CustomGraphClassifier.training" href="#oxgat.models.CustomGraphClassifier.training">training</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.models.CustomNodeClassifier" href="#oxgat.models.CustomNodeClassifier">CustomNodeClassifier</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.models.CustomNodeClassifier.dump_patches" href="#oxgat.models.CustomNodeClassifier.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.models.CustomNodeClassifier.standard_test" href="#oxgat.models.CustomNodeClassifier.standard_test">standard_test</a></code></li>
+<li><code><a title="oxgat.models.CustomNodeClassifier.standard_train" href="#oxgat.models.CustomNodeClassifier.standard_train">standard_train</a></code></li>
+<li><code><a title="oxgat.models.CustomNodeClassifier.training" href="#oxgat.models.CustomNodeClassifier.training">training</a></code></li>
 </ul>
 </li>
 <li>

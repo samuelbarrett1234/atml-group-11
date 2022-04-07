@@ -285,6 +285,71 @@ class InductiveGATModel(_BaseGATModel):
 
 
 class CustomNodeClassifier(AbstractModel):
+    """A configurable node classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in ["loss", "acc"] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to "loss".
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch, if inductive classification,
+        or number of subgraphs in a training/testing batch, if transductive
+        classification and sampling is enabled. If transductive classification
+        and sampling is disabled this should always be 1. Defaults to None, which
+        will use 128 graphs/subgraphs in a batch if relevant.
+    mode : str, optional
+        String in ["transductive", "inductive"] specifying whether the given
+        task will be transductive or inductive node classification. If
+        "transductive" the provided data is assumed to have `train_mask`,
+        `val_mask` and `test_mask` attributes.Defaults to "transductive".
+    sampling : str, optional
+        Whether to use sampling to load batches of subgraphs instead of entire
+        graphs during training. May help with memory usage. Defaults to False.
+    sampling_neighbors: int, optional
+        If sampling is enabled, this specifies how many neighbours of a node
+        should be sampled at each step. If -1, all neighbours will be sampled.
+        Defaults to -1.
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 100.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    """
     def __init__(
             self,
             in_features: int,
@@ -457,6 +522,77 @@ class CustomNodeClassifier(AbstractModel):
 
 
 class CustomGraphClassifier(AbstractModel):
+    """A configurable *graph* classification model for use in the benchmark experiments.
+    
+    Parameters
+    ----------
+    in_features : int
+        The number of features per node in the input data.
+    num_classes : int
+        The number of classes for node classification.
+    num_attention_layers : int, optional
+        How many attention layers to use, defaults to 2.
+    heads_per_layer : int or List[int], optional
+        How many attention heads to use per layer, defaults to [8,1].
+    hidden_feature_dims : int or List[int], optional
+        What the feature dimensions should be between the attention layers.
+        Defaults to 8.
+    layer_type : Type[torch.nn.Module], optional
+        What type of multi-head attention layer to use, defaults to MultiHeadAttentionLayer.
+    attention_type : Type[components.AbstractAttentionHead], optional
+        What type of attention head to use within each layer, defaults to GATAttentionHead.
+    num_mlp_hidden_layers: int, optional
+        How many hidden layers to use in the final aggregation MLP. Defaults
+        to 1.
+    mlp_hidden_layer_dims = Optional[int or List[int]], optional
+        Width of each hidden layer in the final MLP. If None, the dimension of
+        the output of the final attention layer is used. Defaults to None.
+    dropout : float, optional
+        Probabilistic training dropout to apply to attention calculation
+        and feature updates. Defaults to 0.6.
+    learning_rate : float, optional
+        Learning rate for the Adam optimizer, defaults to 0.005.
+    regularisation : float, optional
+        L2-regularisation coefficient, defaults to 0.0005.
+    restore_best : str, optional
+        String in ["loss", "acc"] specifying whether to at the end of trianing
+        restore the model weights giving the best validation *loss* or *score*.
+        Defaults to "loss".
+    batch_size : Optional[int], optional
+        Number of graphs in a training/testing batch. Defaults to 128.
+    pooling : str, optional
+        String in ["mean", "sum", "max"] specifying what type of global pooling
+        operation should be applied after the final attention layer. Defaults
+        to "mean".
+    loader_num_workers: int, optional
+        Number of CPU workers to use for loading data. If using GPU, this should
+        be set to 0. Defaults to 0.
+    cast_to_float: bool, optional
+        Whether to forcibly convert each node's feature vector into a tensor
+        of floats before processing. May be necessary on some datasets.
+        Defaults to False.
+    early_stopping_patience : int, optional
+        How many epochs to wait before stopping training if the model does not
+        improve in loss or accuracy on the validation set. Defaults to 5.
+    metric: str, optional
+        String in ["accuracy", "roc_auc_score"] specifying what quantity should
+        be used to measure the success of the model. The callback metrics
+        "val_acc" and "test_acc" will refer to this quantity even if accuracy
+        isn't used as the metric. Defaults to "accuracy".
+    add_pos: bool, optional
+        Whether to include the `pos` attribute of a node in its feature
+        vector. Applicable to MNIST and CIFAR10 datasets. Defaults to False.
+    max_epochs: int, optional
+        Number of epochs to stop after no matter what. Defaults to 2000.
+    **kwargs, optional
+        Ketword arguments to be supplied to the attention layers.
+
+    Attributes
+    ----------
+    final_metrics : dict
+        After training and/or testing is completed this attribute will contain
+        a dictionary of metrics from the training and testing procedures.
+    """
     def __init__(
             self,
             in_features: int,

@@ -38,11 +38,62 @@ from pytorch_lightning.utilities import rank_zero_warn
 from pytorch_lightning.utilities.exceptions import MisconfigurationException
 import torch
 import torch.nn.functional as F
+import torch_geometric.data
+import torch_geometric.utils
+from torch_sparse import spspmm
 
+
+def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
+    &#34;&#34;&#34;Applies dropout to a sparse tensor.
+    &#34;&#34;&#34;
+    assert x.is_sparse, &#34;Input is not sparse&#34;
+    x = x.coalesce()
+    new_values = F.dropout(x.values(), p=p, training=training)
+    return torch.sparse_coo_tensor(values=new_values, 
+                                   indices=x.indices(),
+                                   size=x.size())
+
+
+def sparse_power(edge_index: torch.Tensor, size: int, power: int) -&gt; torch.Tensor:
+    &#34;&#34;&#34;Calculates the power of a sparse representation of an adjacency matrix.&#34;&#34;&#34;
+    edge_values = torch.ones(edge_index.size(1))
+    output_index, output_values = edge_index.clone(), edge_values.clone()
+    for _ in range(power):
+        output_index, output_values = spspmm(output_index, output_values,
+                                             edge_index, edge_values, size,
+                                             size, size, True)
+    return output_index
+
+
+def get_max_degree(dataset: torch_geometric.data.Dataset):
+    &#34;&#34;&#34;Returns the maximum degree of any node in the dataset&#34;&#34;&#34;
+    results = []
+    for i in range(len(dataset)):
+        degrees = get_degrees(dataset[i].edge_index)
+        results.append(degrees.max().item())
+    return max(results)
+
+
+def get_degrees(edge_index: torch.Tensor,
+                num_nodes: Optional[int] = None,
+                out: bool = True):
+    &#34;&#34;&#34;Gets a tensor of the (unweighted) degrees of each node in a graph
+    given its edge index.
+    &#34;&#34;&#34;
+    N = torch_geometric.utils.num_nodes.maybe_num_nodes(edge_index, num_nodes)
+    degrees = torch.zeros(N, dtype=torch.long)
+    for i in range(N):
+        degrees[i] = (edge_index[1, edge_index[0] == i].unique().size(0)
+                      if out
+                      else edge_index[0,edge_index[1] == i].unique().size(0))
+    return degrees
 
 class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
     &#34;&#34;&#34;Subclass of `pytorch_lightning.callbacks.early_stopping.EarlyStopping` that
     stops training early only if all of multiple conditions are met.
+
+    Implementation mostly copy-pasted/adapted from the PyTorch Lightning
+    superclass implementation.
 
     The semantics are the obvious ones, see documentation of `EarlyStopping`.
     &#34;&#34;&#34;
@@ -175,18 +226,7 @@ class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
             )
         else:
             msg = f&#34;Metric {self.monitors[idx]} improved. New best score: {current:.3f}&#34;
-        return msg
-
-
-def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
-    &#34;&#34;&#34;Applies dropout to a sparse tensor.
-    &#34;&#34;&#34;
-    assert x.is_sparse, &#34;Input is not sparse&#34;
-    x = x.coalesce()
-    new_values = F.dropout(x.values(), p=p, training=training)
-    return torch.sparse_coo_tensor(values=new_values, 
-                                   indices=x.indices(),
-                                   size=x.size())</code></pre>
+        return msg</code></pre>
 </details>
 </section>
 <section>
@@ -196,6 +236,49 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
 <section>
 <h2 class="section-title" id="header-functions">Functions</h2>
 <dl>
+<dt id="oxgat.utils.get_degrees"><code class="name flex">
+<span>def <span class="ident">get_degrees</span></span>(<span>edge_index: torch.Tensor, num_nodes: Optional[int] = None, out: bool = True)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Gets a tensor of the (unweighted) degrees of each node in a graph
+given its edge index.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_degrees(edge_index: torch.Tensor,
+                num_nodes: Optional[int] = None,
+                out: bool = True):
+    &#34;&#34;&#34;Gets a tensor of the (unweighted) degrees of each node in a graph
+    given its edge index.
+    &#34;&#34;&#34;
+    N = torch_geometric.utils.num_nodes.maybe_num_nodes(edge_index, num_nodes)
+    degrees = torch.zeros(N, dtype=torch.long)
+    for i in range(N):
+        degrees[i] = (edge_index[1, edge_index[0] == i].unique().size(0)
+                      if out
+                      else edge_index[0,edge_index[1] == i].unique().size(0))
+    return degrees</code></pre>
+</details>
+</dd>
+<dt id="oxgat.utils.get_max_degree"><code class="name flex">
+<span>def <span class="ident">get_max_degree</span></span>(<span>dataset: torch_geometric.data.dataset.Dataset)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Returns the maximum degree of any node in the dataset</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def get_max_degree(dataset: torch_geometric.data.Dataset):
+    &#34;&#34;&#34;Returns the maximum degree of any node in the dataset&#34;&#34;&#34;
+    results = []
+    for i in range(len(dataset)):
+        degrees = get_degrees(dataset[i].edge_index)
+        results.append(degrees.max().item())
+    return max(results)</code></pre>
+</details>
+</dd>
 <dt id="oxgat.utils.sparse_dropout"><code class="name flex">
 <span>def <span class="ident">sparse_dropout</span></span>(<span>x: torch.Tensor, p: float, training: bool = True)</span>
 </code></dt>
@@ -216,6 +299,26 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
                                    size=x.size())</code></pre>
 </details>
 </dd>
+<dt id="oxgat.utils.sparse_power"><code class="name flex">
+<span>def <span class="ident">sparse_power</span></span>(<span>edge_index: torch.Tensor, size: int, power: int) ‑> torch.Tensor</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Calculates the power of a sparse representation of an adjacency matrix.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def sparse_power(edge_index: torch.Tensor, size: int, power: int) -&gt; torch.Tensor:
+    &#34;&#34;&#34;Calculates the power of a sparse representation of an adjacency matrix.&#34;&#34;&#34;
+    edge_values = torch.ones(edge_index.size(1))
+    output_index, output_values = edge_index.clone(), edge_values.clone()
+    for _ in range(power):
+        output_index, output_values = spspmm(output_index, output_values,
+                                             edge_index, edge_values, size,
+                                             size, size, True)
+    return output_index</code></pre>
+</details>
+</dd>
 </dl>
 </section>
 <section>
@@ -228,6 +331,8 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
 <dd>
 <div class="desc"><p>Subclass of <code>pytorch_lightning.callbacks.early_stopping.EarlyStopping</code> that
 stops training early only if all of multiple conditions are met.</p>
+<p>Implementation mostly copy-pasted/adapted from the PyTorch Lightning
+superclass implementation.</p>
 <p>The semantics are the obvious ones, see documentation of <code>EarlyStopping</code>.</p></div>
 <details class="source">
 <summary>
@@ -236,6 +341,9 @@ stops training early only if all of multiple conditions are met.</p>
 <pre><code class="python">class MultipleEarlyStopping(pl.callbacks.early_stopping.EarlyStopping):
     &#34;&#34;&#34;Subclass of `pytorch_lightning.callbacks.early_stopping.EarlyStopping` that
     stops training early only if all of multiple conditions are met.
+
+    Implementation mostly copy-pasted/adapted from the PyTorch Lightning
+    superclass implementation.
 
     The semantics are the obvious ones, see documentation of `EarlyStopping`.
     &#34;&#34;&#34;
@@ -488,7 +596,10 @@ you will still need to override <code>on_save_checkpoint</code> to return a <cod
 </li>
 <li><h3><a href="#header-functions">Functions</a></h3>
 <ul class="">
+<li><code><a title="oxgat.utils.get_degrees" href="#oxgat.utils.get_degrees">get_degrees</a></code></li>
+<li><code><a title="oxgat.utils.get_max_degree" href="#oxgat.utils.get_max_degree">get_max_degree</a></code></li>
 <li><code><a title="oxgat.utils.sparse_dropout" href="#oxgat.utils.sparse_dropout">sparse_dropout</a></code></li>
+<li><code><a title="oxgat.utils.sparse_power" href="#oxgat.utils.sparse_power">sparse_power</a></code></li>
 </ul>
 </li>
 <li><h3><a href="#header-classes">Classes</a></h3>

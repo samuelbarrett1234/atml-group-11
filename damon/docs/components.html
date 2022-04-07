@@ -32,19 +32,265 @@ in various model architectures.</p>
 <pre><code class="python">&#34;&#34;&#34;Provides individual model components (layers, attention heads) for use
 in various model architectures.
 &#34;&#34;&#34;
+from abc import ABC, abstractmethod
 import numpy as np
 import torch
 import torch.nn.functional as F
 from torch_geometric.utils import to_dense_adj
+from torch_geometric.transforms import OneHotDegree
+from torch_geometric.data import Data
+from typing import Type
+from torch_sparse import spspmm
 
 from . import utils
 
 
-class GATLayer(torch.nn.Module):
+class AbstractAttentionHead(torch.nn.Module, ABC):
+    @abstractmethod
+    def __init__(self):
+        &#34;&#34;&#34;Initialization&#34;&#34;&#34;
+
+    @abstractmethod
+    def reset_parameters(self):
+        &#34;&#34;&#34;(Re)-initialize parameters&#34;&#34;&#34;
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        &#34;&#34;&#34;Forward pass&#34;&#34;&#34;
+
+
+class GATAttentionHead(AbstractAttentionHead):
+    &#34;&#34;&#34;Represents a single attention head.
+    
+    Parameters
+    ----------
+    in_features : int
+        Length of each of the input node features.
+    out_features : int
+        Length of each of the output node features.
+    leaky_relu_slope : int, optional
+        Negative slope of the LeakyReLU activation, defaults to `0.2`.
+    attention_dropout : float, optional
+        Dropout probability to be applied to normalized attention coefficients
+        during training. Defaults to `0` (no dropout).
+    neighbourhood_depth : int, optional
+        Calculate attention only between nodes up to this many edges apart.
+        Defaults to 1.
+    strict_neighbourhoods : bool, optional
+        If `True`, only allow a node to pay attention to other nodes connected by
+        a path of length *exactly* `neighbourhood_depth`; if `False` allow
+        connections of length *up to* `neighbourhood_depth`. In particular, when
+        `neighbourhood_depth=1` this controls whether nodes can pay attention to
+        themselves or not. Defaults to `False`.
+    sparse : bool, optional
+        Whether to use sparse matrix operations. Defaults to `True`.
+    &#34;&#34;&#34;
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 leaky_relu_slope: bool = 0.2,
+                 attention_dropout: float = 0,
+                 neighbourhood_depth: int = 1,
+                 strict_neighbourhoods: bool = False,
+                 sparse: bool = True):
+        torch.nn.Module.__init__(self)
+
+        self.W = torch.nn.Linear(in_features, out_features, bias=False)
+        self.a1 = torch.nn.Linear(out_features, 1, bias=False)
+        self.a2 = torch.nn.Linear(out_features, 1, bias=False)
+
+        self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
+        self.leaky_relu_slope = leaky_relu_slope
+        self.neighbourhood_depth = neighbourhood_depth
+        self.attention_dropout = attention_dropout
+        self.strict_neighbourhoods = strict_neighbourhoods
+        self.sparse = sparse
+        self.out_features = out_features
+
+        self.reset_parameters()
+        
+    def reset_parameters(self):
+        W_gain = np.sqrt(1.55/self.W.in_features) # Optimized for ELU
+        a_gain = torch.nn.init.calculate_gain(&#34;leaky_relu&#34;,
+                                              self.leaky_relu_slope)
+        a_correction = np.sqrt((self.out_features+1)/(2*self.out_features+1))
+        torch.nn.init.xavier_uniform_(self.W.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=a_correction*a_gain)
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=a_correction*a_gain)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        &#34;&#34;&#34;Applies this module forwards on an input graph.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            The node feature tensor of the input graph.
+        edge_index : torch.Tensor
+            The COO-formatted edge index tensor of the input graph (*not* an
+            adjacency matrix).
+
+        Returns
+        -------
+        torch.Tensor
+            The new node feature tensor after applying this module.
+        &#34;&#34;&#34;
+        x = self.W(x)
+        if self.sparse:
+            sparse_attention = self._sparse_attention(x, edge_index)
+            sparse_attention = utils.sparse_dropout(sparse_attention,
+                                                    p=self.attention_dropout,
+                                                    training=self.training)
+            return torch.sparse.mm(sparse_attention, x)
+        else:
+            attention = self._attention(x, edge_index)
+            attention = F.dropout(attention,
+                                  p=self.attention_dropout,
+                                  training=self.training)
+            return attention @ x
+
+    # Calculates the attention matrix for a graph
+    def _attention(self, x, edge_index):
+        n = x.shape[0]
+        adj = torch.squeeze(to_dense_adj(edge_index, max_num_nodes=n))
+        if not self.strict_neighbourhoods: # Add self-loops
+            adj += torch.diag(torch.ones(n, dtype=torch.long)).type_as(x)
+        if self.neighbourhood_depth &gt; 1:
+            # Calculate higher-order adjacency matrix
+            adj = torch.matrix_power(adj, self.neighbourhood_depth)
+
+        zero = -9e15 * torch.ones(n,n).type_as(x)
+        e = torch.where(adj &gt; 0, self.a1(x) + self.a2(x).T, zero)
+        return F.softmax(self.leaky_relu(e), dim=1)
+
+    # Calculates the sparse attention matrix for a graph
+    def _sparse_attention(self, x, edge_index):
+        n = x.shape[0]
+        if not self.strict_neighbourhoods: # Add self-loops
+            self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
+            edge_index = torch.cat([edge_index, self_loops], dim=1)
+        if self.neighbourhood_depth &gt; 1:
+            # Calculate higher-order adjacency matrix
+            edge_index = utils.sparse_power(edge_index, n, self.neighbourhood_depth)
+        
+        attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
+                                         self.a2(x[edge_index[1,:],:])).flatten()
+        e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
+        return torch.sparse.softmax(e, dim=1)
+
+
+class GATv2AttentionHead(AbstractAttentionHead):
+    &#34;&#34;&#34;Represents a single GATv2 attention head.
+    
+    Parameters
+    ----------
+    in_features : int
+        Length of each of the input node features.
+    out_features : int
+        Length of each of the output node features.
+    leaky_relu_slope : int, optional
+        Negative slope of the LeakyReLU activation, defaults to `0.2`.
+    attention_dropout : float, optional
+        Dropout probability to be applied to normalized attention coefficients
+        during training. Defaults to `0` (no dropout).
+    weight_sharing : bool, optional
+        Whether to require W_1=W_2. Defaults to True.
+    bias : bool, optional
+        Whether to add a bias term (to the learnt weight matrix/matrices).
+        Defaults to True.
+    feature_update_matrix : str, optional
+        String in [&#34;source&#34;, &#34;target&#34;, &#34;separate&#34;]. Defaults to &#34;source&#34;.
+    &#34;&#34;&#34;
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 leaky_relu_slope: bool = 0.2,
+                 attention_dropout: float = 0,
+                 weight_sharing: bool = True,
+                 bias: bool = True,
+                 feature_update_matrix: str = &#34;source&#34;):
+        torch.nn.Module.__init__(self)
+        assert feature_update_matrix in [&#34;source&#34;, &#34;target&#34;, &#34;separate&#34;]
+        
+        self.W1 = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.W2 = (self.W1 if weight_sharing 
+                   else torch.nn.Linear(in_features, out_features, bias=bias))
+        if feature_update_matrix == &#34;separate&#34;:
+            self.W3 = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.a1 = torch.nn.Linear(out_features, 1, bias=False)
+        self.a2 = torch.nn.Linear(out_features, 1, bias=False)
+
+        # Reference for feature update matrix
+        self.W = self.W1 if feature_update_matrix == &#34;target&#34; else (
+                 self.W2 if feature_update_matrix == &#34;source&#34; else
+                 self.W3)
+        
+        self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
+        self.leaky_relu_slope = leaky_relu_slope
+        self.attention_dropout = attention_dropout
+        self.out_features = out_features
+        self.weight_sharing = weight_sharing
+        self.feature_update_matrix = feature_update_matrix
+        self.separate = (feature_update_matrix == &#34;separate&#34;)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # TODO: add corrections
+        W_gain = torch.nn.init.calculate_gain(&#34;leaky_relu&#34;,
+                                              self.leaky_relu_slope)
+        torch.nn.init.xavier_uniform_(self.W1.weight, gain=W_gain)
+        if not self.weight_sharing:
+            torch.nn.init.xavier_uniform_(self.W2.weight, gain=W_gain)
+        if self.separate:
+            torch.nn.init.xavier_uniform_(self.W3.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=1)
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=1)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        &#34;&#34;&#34;Applies this module forwards on an input graph.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            The node feature tensor of the input graph.
+        edge_index : torch.Tensor
+            The COO-formatted edge index tensor of the input graph (*not* an
+            adjacency matrix).
+
+        Returns
+        -------
+        torch.Tensor
+            The new node feature tensor after applying this module.
+        &#34;&#34;&#34;
+        sparse_attention = self._sparse_attention(x, edge_index)
+        sparse_attention = utils.sparse_dropout(sparse_attention,
+                                                p=self.attention_dropout,
+                                                training=self.training)
+        return torch.sparse.mm(sparse_attention, self.W(x))
+
+    # Calculates the sparse attention matrix for a graph
+    def _sparse_attention(self, x, edge_index):
+        n = x.shape[0]
+
+        # Add self-loops
+        self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
+        edge_index = torch.cat([edge_index, self_loops], dim=1)
+
+        # Calculate attention
+        x1, x2 = self.leaky_relu(self.W1(x)), self.leaky_relu(self.W2(x))
+        attention_vals = (self.a1(x1[edge_index[0,:],:]) + 
+                          self.a2(x2[edge_index[1,:],:])).flatten()
+        e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
+        return torch.sparse.softmax(e, dim=1)
+
+
+class MultiHeadAttentionLayer(torch.nn.Module):
     &#34;&#34;&#34;Represents a single multi-head attention layer.
 
     Parameters
     ----------
+    attention_type : Type[AbstractAttentionHead]
+        The class of attention head to use.
     in_features : int
         Length of each of the input node features.
     out_features : int
@@ -61,38 +307,22 @@ class GATLayer(torch.nn.Module):
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
-    neighbourhood_depth : int, optional
-        Calculate attention only between nodes up to this many edges apart.
-        Defaults to 1.
-    strict_neighbourhoods : bool, optional
-        If `True`, only allow a node to pay attention to other nodes connected by
-        a path of length *exactly* `neighbourhood_depth`; if `False` allow
-        connections of length *up to* `neighbourhood_depth`. In particular, when
-        `neighbourhood_depth=1` this controls whether nodes can pay attention to
-        themselves or not. Defaults to `False`.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth &gt; 1`. Defaults to `True`.
+    **kwargs
+        Keyword arguments to be passed to the attention heads themselves.
     &#34;&#34;&#34;
     def __init__(self,
+                 attention_type: Type[AbstractAttentionHead],
                  in_features: int,
                  out_features: int,
-                 leaky_relu_slope: float = 0.2,
                  num_heads: int = 1,
                  is_final_layer: bool = False,
-                 attention_dropout: float = 0,
-                 neighbourhood_depth: int = 1,
-                 strict_neighbourhoods: bool = False,
-                 sparse: bool = True):
+                 **kwargs):
         super().__init__()
         self.is_final_layer = is_final_layer
-        self.heads = torch.nn.ModuleList([AttentionHead(in_features,
-                                                        out_features,
-                                                        leaky_relu_slope,
-                                                        attention_dropout,
-                                                        neighbourhood_depth,
-                                                        strict_neighbourhoods,
-                                                        sparse=sparse)
+        self.in_features = in_features
+        self.heads = torch.nn.ModuleList([attention_type(in_features,
+                                                         out_features,
+                                                         **kwargs)
                                           for _ in range(num_heads)])
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
@@ -118,116 +348,24 @@ class GATLayer(torch.nn.Module):
         return output
 
 
-class AttentionHead(torch.nn.Module):
-    &#34;&#34;&#34;Represents a single attention head.
-    
-    Parameters
-    ----------
-    in_features : int
-        Length of each of the input node features.
-    out_features : int
-        Length of each of the output node features.
-    leaky_relu_slope : int, optional
-        Negative slope of the LeakyReLU activation, defaults to `0.2`.
-    attention_dropout : float, optional
-        Dropout probability to be applied to normalized attention coefficients
-        during training. Defaults to `0` (no dropout).
-    neighbourhood_depth : int, optional
-        Calculate attention only between nodes up to this many edges apart.
-        Defaults to 1.
-    strict_neighbourhoods : bool, optional
-        If `True`, only allow a node to pay attention to other nodes connected by
-        a path of length *exactly* `neighbourhood_depth`; if `False` allow
-        connections of length *up to* `neighbourhood_depth`. In particular, when
-        `neighbourhood_depth=1` this controls whether nodes can pay attention to
-        themselves or not. Defaults to `False`.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth &gt; 1`. Defaults to `True`.
+class MultiHeadAttentionLayerWithDegrees(MultiHeadAttentionLayer): # TODO: generalise to weighted degree
+    &#34;&#34;&#34;Represents a single multi-head attention layer which encodes each
+    node&#39;s degree into its feature vector before applying attention heads.
+
+    Inherits from `MultiHeadAttentionLayer`.
     &#34;&#34;&#34;
-    def __init__(self,
-                 in_features: int,
-                 out_features: int,
-                 leaky_relu_slope: bool = 0.2,
-                 attention_dropout: float = 0,
-                 neighbourhood_depth: int = 1,
-                 strict_neighbourhoods: bool = False,
-                 sparse: bool = True):
-        super().__init__()
-        assert neighbourhood_depth == 1 or not sparse, \
-            &#34;Sparse computation only supported for `neighbourhood_depth=1`.&#34;
-
-        self.W = torch.nn.Linear(in_features, out_features, bias=False)
-        self.a1 = torch.nn.Linear(out_features, 1, bias=False)
-        self.a2 = torch.nn.Linear(out_features, 1, bias=False)
-
-        self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
-        self.neighbourhood_depth = neighbourhood_depth
-        self.attention_dropout = attention_dropout
-        self.strict_neighbourhoods = strict_neighbourhoods
-        self.sparse = sparse
-
-        self.reset_parameters()
-        
-    def reset_parameters(self):
-        torch.nn.init.xavier_uniform_(self.W.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a1.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a2.weight, gain=np.sqrt(2))
+    def __init__(self, *args, **kwargs):
+        max_degree = kwargs.pop(&#34;max_degree&#34;) # Required
+        self.add_degrees = OneHotDegree(max_degree)
+        if &#34;in_features&#34; in kwargs:
+            kwargs[&#34;in_features&#34;] += max_degree+1
+        else:
+            args[1] += max_degree+1
+        super().__init__(*args, **kwargs)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
-        &#34;&#34;&#34;Applies this module forwards on an input graph.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            The node feature tensor of the input graph.
-        edge_index : torch.Tensor
-            The COO-formatted edge index tensor of the input graph (*not* an
-            adjacency matrix).
-
-        Returns
-        -------
-        torch.Tensor
-            The new node feature tensor after applying this module.
-        &#34;&#34;&#34;
-        x = self.W(x)
-        if self.sparse:
-            sparse_attention = self._sparse_attention(x, edge_index)
-            sparse_attention = utils.sparse_dropout(sparse_attention,
-                                                    p=self.attention_dropout,
-                                                    training=self.training)
-            return torch.sparse.mm(sparse_attention, x)
-        else:
-            attention = self._attention(x, edge_index)
-            attention = F.dropout(attention,
-                                  p=self.attention_dropout,
-                                  training=self.training)
-            return attention @ x
-
-    # Calculates the attention matrix for a graph
-    def _attention(self, x, edge_index):
-        n = x.shape[0]
-        adj = torch.squeeze(to_dense_adj(edge_index, max_num_nodes=n))
-        if not self.strict_neighbourhoods: # Add self-loops
-            adj += torch.diag(torch.ones(n, dtype=torch.long)).type_as(x)
-        if self.neighbourhood_depth &gt; 1:
-            # Calculate higher-order adjacency matrix
-            adj = torch.matrix_power(adj, self.neighbourhood_depth)
-
-        zero = -9e15 * torch.ones(n,n).type_as(x)
-        e = torch.where(adj &gt; 0, self.a1(x) + self.a2(x).T, zero)
-        return F.softmax(self.leaky_relu(e), dim=1)
-
-    # Calculates the sparse attention matrix for a graph
-    def _sparse_attention(self, x, edge_index):
-        n = x.shape[0]
-        if not self.strict_neighbourhoods: # Add self-loops
-            self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
-            edge_index = torch.cat([edge_index, self_loops], dim=1)
-        attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
-                                         self.a2(x[edge_index[1,:],:])).flatten()
-        e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
-        return torch.sparse.softmax(e, dim=1)</code></pre>
+        x = self.add_degrees(Data(x, edge_index)).x
+        return super().forward(x, edge_index)</code></pre>
 </details>
 </section>
 <section>
@@ -239,8 +377,105 @@ class AttentionHead(torch.nn.Module):
 <section>
 <h2 class="section-title" id="header-classes">Classes</h2>
 <dl>
-<dt id="oxgat.components.AttentionHead"><code class="flex name class">
-<span>class <span class="ident">AttentionHead</span></span>
+<dt id="oxgat.components.AbstractAttentionHead"><code class="flex name class">
+<span>class <span class="ident">AbstractAttentionHead</span></span>
+</code></dt>
+<dd>
+<div class="desc"><p>Base class for all neural network modules.</p>
+<p>Your models should also subclass this class.</p>
+<p>Modules can also contain other Modules, allowing to nest them in
+a tree structure. You can assign the submodules as regular attributes::</p>
+<pre><code>import torch.nn as nn
+import torch.nn.functional as F
+
+class Model(nn.Module):
+    def __init__(self):
+        super(Model, self).__init__()
+        self.conv1 = nn.Conv2d(1, 20, 5)
+        self.conv2 = nn.Conv2d(20, 20, 5)
+
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        return F.relu(self.conv2(x))
+</code></pre>
+<p>Submodules assigned in this way will be registered, and will have their
+parameters converted too when you call :meth:<code>to</code>, etc.</p>
+<p>:ivar training: Boolean represents whether this module is in training or
+evaluation mode.
+:vartype training: bool</p>
+<p>Initialization</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class AbstractAttentionHead(torch.nn.Module, ABC):
+    @abstractmethod
+    def __init__(self):
+        &#34;&#34;&#34;Initialization&#34;&#34;&#34;
+
+    @abstractmethod
+    def reset_parameters(self):
+        &#34;&#34;&#34;(Re)-initialize parameters&#34;&#34;&#34;
+
+    @abstractmethod
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        &#34;&#34;&#34;Forward pass&#34;&#34;&#34;</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="oxgat.components.GATAttentionHead" href="#oxgat.components.GATAttentionHead">GATAttentionHead</a></li>
+<li><a title="oxgat.components.GATv2AttentionHead" href="#oxgat.components.GATv2AttentionHead">GATv2AttentionHead</a></li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.components.AbstractAttentionHead.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.components.AbstractAttentionHead.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="oxgat.components.AbstractAttentionHead.forward"><code class="name flex">
+<span>def <span class="ident">forward</span></span>(<span>self, x: torch.Tensor, edge_index: torch.Tensor) ‑> Callable[..., Any]</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Forward pass</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+    &#34;&#34;&#34;Forward pass&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+<dt id="oxgat.components.AbstractAttentionHead.reset_parameters"><code class="name flex">
+<span>def <span class="ident">reset_parameters</span></span>(<span>self)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>(Re)-initialize parameters</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">@abstractmethod
+def reset_parameters(self):
+    &#34;&#34;&#34;(Re)-initialize parameters&#34;&#34;&#34;</code></pre>
+</details>
+</dd>
+</dl>
+</dd>
+<dt id="oxgat.components.GATAttentionHead"><code class="flex name class">
+<span>class <span class="ident">GATAttentionHead</span></span>
 <span>(</span><span>in_features: int, out_features: int, leaky_relu_slope: bool = 0.2, attention_dropout: float = 0, neighbourhood_depth: int = 1, strict_neighbourhoods: bool = False, sparse: bool = True)</span>
 </code></dt>
 <dd>
@@ -266,15 +501,15 @@ connections of length <em>up to</em> <code>neighbourhood_depth</code>. In partic
 <code>neighbourhood_depth=1</code> this controls whether nodes can pay attention to
 themselves or not. Defaults to <code>False</code>.</dd>
 <dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>Whether to use sparse matrix operations. Must be <code>False</code> if
-<code>neighbourhood_depth &gt; 1</code>. Defaults to <code>True</code>.</dd>
-</dl>
-<p>Initializes internal Module state, shared by both nn.Module and ScriptModule.</p></div>
+<dd>Whether to use sparse matrix operations. Defaults to <code>True</code>.</dd>
+<dt><strong><code>Initialization</code></strong></dt>
+<dd>&nbsp;</dd>
+</dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">class AttentionHead(torch.nn.Module):
+<pre><code class="python">class GATAttentionHead(AbstractAttentionHead):
     &#34;&#34;&#34;Represents a single attention head.
     
     Parameters
@@ -298,8 +533,7 @@ themselves or not. Defaults to <code>False</code>.</dd>
         `neighbourhood_depth=1` this controls whether nodes can pay attention to
         themselves or not. Defaults to `False`.
     sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth &gt; 1`. Defaults to `True`.
+        Whether to use sparse matrix operations. Defaults to `True`.
     &#34;&#34;&#34;
     def __init__(self,
                  in_features: int,
@@ -309,26 +543,30 @@ themselves or not. Defaults to <code>False</code>.</dd>
                  neighbourhood_depth: int = 1,
                  strict_neighbourhoods: bool = False,
                  sparse: bool = True):
-        super().__init__()
-        assert neighbourhood_depth == 1 or not sparse, \
-            &#34;Sparse computation only supported for `neighbourhood_depth=1`.&#34;
+        torch.nn.Module.__init__(self)
 
         self.W = torch.nn.Linear(in_features, out_features, bias=False)
         self.a1 = torch.nn.Linear(out_features, 1, bias=False)
         self.a2 = torch.nn.Linear(out_features, 1, bias=False)
 
         self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
+        self.leaky_relu_slope = leaky_relu_slope
         self.neighbourhood_depth = neighbourhood_depth
         self.attention_dropout = attention_dropout
         self.strict_neighbourhoods = strict_neighbourhoods
         self.sparse = sparse
+        self.out_features = out_features
 
         self.reset_parameters()
         
     def reset_parameters(self):
-        torch.nn.init.xavier_uniform_(self.W.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a1.weight, gain=np.sqrt(2))
-        torch.nn.init.xavier_uniform_(self.a2.weight, gain=np.sqrt(2))
+        W_gain = np.sqrt(1.55/self.W.in_features) # Optimized for ELU
+        a_gain = torch.nn.init.calculate_gain(&#34;leaky_relu&#34;,
+                                              self.leaky_relu_slope)
+        a_correction = np.sqrt((self.out_features+1)/(2*self.out_features+1))
+        torch.nn.init.xavier_uniform_(self.W.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=a_correction*a_gain)
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=a_correction*a_gain)
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
         &#34;&#34;&#34;Applies this module forwards on an input graph.
@@ -380,6 +618,10 @@ themselves or not. Defaults to <code>False</code>.</dd>
         if not self.strict_neighbourhoods: # Add self-loops
             self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
             edge_index = torch.cat([edge_index, self_loops], dim=1)
+        if self.neighbourhood_depth &gt; 1:
+            # Calculate higher-order adjacency matrix
+            edge_index = utils.sparse_power(edge_index, n, self.neighbourhood_depth)
+        
         attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
                                          self.a2(x[edge_index[1,:],:])).flatten()
         e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
@@ -387,22 +629,24 @@ themselves or not. Defaults to <code>False</code>.</dd>
 </details>
 <h3>Ancestors</h3>
 <ul class="hlist">
+<li><a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a></li>
 <li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
 </ul>
 <h3>Class variables</h3>
 <dl>
-<dt id="oxgat.components.AttentionHead.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dt id="oxgat.components.GATAttentionHead.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
-<dt id="oxgat.components.AttentionHead.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dt id="oxgat.components.GATAttentionHead.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
 </dl>
 <h3>Methods</h3>
 <dl>
-<dt id="oxgat.components.AttentionHead.forward"><code class="name flex">
+<dt id="oxgat.components.GATAttentionHead.forward"><code class="name flex">
 <span>def <span class="ident">forward</span></span>(<span>self, x: torch.Tensor, edge_index: torch.Tensor) ‑> Callable[..., Any]</span>
 </code></dt>
 <dd>
@@ -455,31 +699,236 @@ adjacency matrix).</dd>
         return attention @ x</code></pre>
 </details>
 </dd>
-<dt id="oxgat.components.AttentionHead.reset_parameters"><code class="name flex">
-<span>def <span class="ident">reset_parameters</span></span>(<span>self)</span>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.components.AbstractAttentionHead.reset_parameters" href="#oxgat.components.AbstractAttentionHead.reset_parameters">reset_parameters</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
+<dt id="oxgat.components.GATv2AttentionHead"><code class="flex name class">
+<span>class <span class="ident">GATv2AttentionHead</span></span>
+<span>(</span><span>in_features: int, out_features: int, leaky_relu_slope: bool = 0.2, attention_dropout: float = 0, weight_sharing: bool = True, bias: bool = True, feature_update_matrix: str = 'source')</span>
 </code></dt>
 <dd>
-<div class="desc"></div>
+<div class="desc"><p>Represents a single GATv2 attention head.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>Length of each of the input node features.</dd>
+<dt><strong><code>out_features</code></strong> :&ensp;<code>int</code></dt>
+<dd>Length of each of the output node features.</dd>
+<dt><strong><code>leaky_relu_slope</code></strong> :&ensp;<code>int</code>, optional</dt>
+<dd>Negative slope of the LeakyReLU activation, defaults to <code>0.2</code>.</dd>
+<dt><strong><code>attention_dropout</code></strong> :&ensp;<code>float</code>, optional</dt>
+<dd>Dropout probability to be applied to normalized attention coefficients
+during training. Defaults to <code>0</code> (no dropout).</dd>
+<dt><strong><code>weight_sharing</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to require W_1=W_2. Defaults to True.</dd>
+<dt><strong><code>bias</code></strong> :&ensp;<code>bool</code>, optional</dt>
+<dd>Whether to add a bias term (to the learnt weight matrix/matrices).
+Defaults to True.</dd>
+<dt><strong><code>feature_update_matrix</code></strong> :&ensp;<code>str</code>, optional</dt>
+<dd>String in ["source", "target", "separate"]. Defaults to "source".</dd>
+<dt><strong><code>Initialization</code></strong></dt>
+<dd>&nbsp;</dd>
+</dl></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">def reset_parameters(self):
-    torch.nn.init.xavier_uniform_(self.W.weight, gain=np.sqrt(2))
-    torch.nn.init.xavier_uniform_(self.a1.weight, gain=np.sqrt(2))
-    torch.nn.init.xavier_uniform_(self.a2.weight, gain=np.sqrt(2))</code></pre>
+<pre><code class="python">class GATv2AttentionHead(AbstractAttentionHead):
+    &#34;&#34;&#34;Represents a single GATv2 attention head.
+    
+    Parameters
+    ----------
+    in_features : int
+        Length of each of the input node features.
+    out_features : int
+        Length of each of the output node features.
+    leaky_relu_slope : int, optional
+        Negative slope of the LeakyReLU activation, defaults to `0.2`.
+    attention_dropout : float, optional
+        Dropout probability to be applied to normalized attention coefficients
+        during training. Defaults to `0` (no dropout).
+    weight_sharing : bool, optional
+        Whether to require W_1=W_2. Defaults to True.
+    bias : bool, optional
+        Whether to add a bias term (to the learnt weight matrix/matrices).
+        Defaults to True.
+    feature_update_matrix : str, optional
+        String in [&#34;source&#34;, &#34;target&#34;, &#34;separate&#34;]. Defaults to &#34;source&#34;.
+    &#34;&#34;&#34;
+    def __init__(self,
+                 in_features: int,
+                 out_features: int,
+                 leaky_relu_slope: bool = 0.2,
+                 attention_dropout: float = 0,
+                 weight_sharing: bool = True,
+                 bias: bool = True,
+                 feature_update_matrix: str = &#34;source&#34;):
+        torch.nn.Module.__init__(self)
+        assert feature_update_matrix in [&#34;source&#34;, &#34;target&#34;, &#34;separate&#34;]
+        
+        self.W1 = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.W2 = (self.W1 if weight_sharing 
+                   else torch.nn.Linear(in_features, out_features, bias=bias))
+        if feature_update_matrix == &#34;separate&#34;:
+            self.W3 = torch.nn.Linear(in_features, out_features, bias=bias)
+        self.a1 = torch.nn.Linear(out_features, 1, bias=False)
+        self.a2 = torch.nn.Linear(out_features, 1, bias=False)
+
+        # Reference for feature update matrix
+        self.W = self.W1 if feature_update_matrix == &#34;target&#34; else (
+                 self.W2 if feature_update_matrix == &#34;source&#34; else
+                 self.W3)
+        
+        self.leaky_relu = torch.nn.LeakyReLU(negative_slope=leaky_relu_slope)
+        self.leaky_relu_slope = leaky_relu_slope
+        self.attention_dropout = attention_dropout
+        self.out_features = out_features
+        self.weight_sharing = weight_sharing
+        self.feature_update_matrix = feature_update_matrix
+        self.separate = (feature_update_matrix == &#34;separate&#34;)
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        # TODO: add corrections
+        W_gain = torch.nn.init.calculate_gain(&#34;leaky_relu&#34;,
+                                              self.leaky_relu_slope)
+        torch.nn.init.xavier_uniform_(self.W1.weight, gain=W_gain)
+        if not self.weight_sharing:
+            torch.nn.init.xavier_uniform_(self.W2.weight, gain=W_gain)
+        if self.separate:
+            torch.nn.init.xavier_uniform_(self.W3.weight, gain=W_gain)
+        torch.nn.init.xavier_uniform_(self.a1.weight, gain=1)
+        torch.nn.init.xavier_uniform_(self.a2.weight, gain=1)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        &#34;&#34;&#34;Applies this module forwards on an input graph.
+        
+        Parameters
+        ----------
+        x : torch.Tensor
+            The node feature tensor of the input graph.
+        edge_index : torch.Tensor
+            The COO-formatted edge index tensor of the input graph (*not* an
+            adjacency matrix).
+
+        Returns
+        -------
+        torch.Tensor
+            The new node feature tensor after applying this module.
+        &#34;&#34;&#34;
+        sparse_attention = self._sparse_attention(x, edge_index)
+        sparse_attention = utils.sparse_dropout(sparse_attention,
+                                                p=self.attention_dropout,
+                                                training=self.training)
+        return torch.sparse.mm(sparse_attention, self.W(x))
+
+    # Calculates the sparse attention matrix for a graph
+    def _sparse_attention(self, x, edge_index):
+        n = x.shape[0]
+
+        # Add self-loops
+        self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
+        edge_index = torch.cat([edge_index, self_loops], dim=1)
+
+        # Calculate attention
+        x1, x2 = self.leaky_relu(self.W1(x)), self.leaky_relu(self.W2(x))
+        attention_vals = (self.a1(x1[edge_index[0,:],:]) + 
+                          self.a2(x2[edge_index[1,:],:])).flatten()
+        e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
+        return torch.sparse.softmax(e, dim=1)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a></li>
+<li>torch.nn.modules.module.Module</li>
+<li>abc.ABC</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.components.GATv2AttentionHead.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.components.GATv2AttentionHead.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Methods</h3>
+<dl>
+<dt id="oxgat.components.GATv2AttentionHead.forward"><code class="name flex">
+<span>def <span class="ident">forward</span></span>(<span>self, x: torch.Tensor, edge_index: torch.Tensor) ‑> Callable[..., Any]</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Applies this module forwards on an input graph.</p>
+<h2 id="parameters">Parameters</h2>
+<dl>
+<dt><strong><code>x</code></strong> :&ensp;<code>torch.Tensor</code></dt>
+<dd>The node feature tensor of the input graph.</dd>
+<dt><strong><code>edge_index</code></strong> :&ensp;<code>torch.Tensor</code></dt>
+<dd>The COO-formatted edge index tensor of the input graph (<em>not</em> an
+adjacency matrix).</dd>
+</dl>
+<h2 id="returns">Returns</h2>
+<dl>
+<dt><code>torch.Tensor</code></dt>
+<dd>The new node feature tensor after applying this module.</dd>
+</dl></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+    &#34;&#34;&#34;Applies this module forwards on an input graph.
+    
+    Parameters
+    ----------
+    x : torch.Tensor
+        The node feature tensor of the input graph.
+    edge_index : torch.Tensor
+        The COO-formatted edge index tensor of the input graph (*not* an
+        adjacency matrix).
+
+    Returns
+    -------
+    torch.Tensor
+        The new node feature tensor after applying this module.
+    &#34;&#34;&#34;
+    sparse_attention = self._sparse_attention(x, edge_index)
+    sparse_attention = utils.sparse_dropout(sparse_attention,
+                                            p=self.attention_dropout,
+                                            training=self.training)
+    return torch.sparse.mm(sparse_attention, self.W(x))</code></pre>
 </details>
 </dd>
 </dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.components.AbstractAttentionHead.reset_parameters" href="#oxgat.components.AbstractAttentionHead.reset_parameters">reset_parameters</a></code></li>
+</ul>
+</li>
+</ul>
 </dd>
-<dt id="oxgat.components.GATLayer"><code class="flex name class">
-<span>class <span class="ident">GATLayer</span></span>
-<span>(</span><span>in_features: int, out_features: int, leaky_relu_slope: float = 0.2, num_heads: int = 1, is_final_layer: bool = False, attention_dropout: float = 0, neighbourhood_depth: int = 1, strict_neighbourhoods: bool = False, sparse: bool = True)</span>
+<dt id="oxgat.components.MultiHeadAttentionLayer"><code class="flex name class">
+<span>class <span class="ident">MultiHeadAttentionLayer</span></span>
+<span>(</span><span>attention_type: Type[<a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a>], in_features: int, out_features: int, num_heads: int = 1, is_final_layer: bool = False, **kwargs)</span>
 </code></dt>
 <dd>
 <div class="desc"><p>Represents a single multi-head attention layer.</p>
 <h2 id="parameters">Parameters</h2>
 <dl>
+<dt><strong><code>attention_type</code></strong> :&ensp;<code>Type[<a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a>]</code></dt>
+<dd>The class of attention head to use.</dd>
 <dt><strong><code>in_features</code></strong> :&ensp;<code>int</code></dt>
 <dd>Length of each of the input node features.</dd>
 <dt><strong><code>out_features</code></strong> :&ensp;<code>int</code></dt>
@@ -496,29 +945,21 @@ is a concatenation. Defaults to <code>False</code>.</dd>
 <dt><strong><code>attention_dropout</code></strong> :&ensp;<code>float</code>, optional</dt>
 <dd>Dropout probability to be applied to normalized attention coefficients
 during training. Defaults to <code>0</code> (no dropout).</dd>
-<dt><strong><code>neighbourhood_depth</code></strong> :&ensp;<code>int</code>, optional</dt>
-<dd>Calculate attention only between nodes up to this many edges apart.
-Defaults to 1.</dd>
-<dt><strong><code>strict_neighbourhoods</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>If <code>True</code>, only allow a node to pay attention to other nodes connected by
-a path of length <em>exactly</em> <code>neighbourhood_depth</code>; if <code>False</code> allow
-connections of length <em>up to</em> <code>neighbourhood_depth</code>. In particular, when
-<code>neighbourhood_depth=1</code> this controls whether nodes can pay attention to
-themselves or not. Defaults to <code>False</code>.</dd>
-<dt><strong><code>sparse</code></strong> :&ensp;<code>bool</code>, optional</dt>
-<dd>Whether to use sparse matrix operations. Must be <code>False</code> if
-<code>neighbourhood_depth &gt; 1</code>. Defaults to <code>True</code>.</dd>
+<dt><strong><code>**kwargs</code></strong></dt>
+<dd>Keyword arguments to be passed to the attention heads themselves.</dd>
 </dl>
 <p>Initializes internal Module state, shared by both nn.Module and ScriptModule.</p></div>
 <details class="source">
 <summary>
 <span>Expand source code</span>
 </summary>
-<pre><code class="python">class GATLayer(torch.nn.Module):
+<pre><code class="python">class MultiHeadAttentionLayer(torch.nn.Module):
     &#34;&#34;&#34;Represents a single multi-head attention layer.
 
     Parameters
     ----------
+    attention_type : Type[AbstractAttentionHead]
+        The class of attention head to use.
     in_features : int
         Length of each of the input node features.
     out_features : int
@@ -535,38 +976,22 @@ themselves or not. Defaults to <code>False</code>.</dd>
     attention_dropout : float, optional
         Dropout probability to be applied to normalized attention coefficients
         during training. Defaults to `0` (no dropout).
-    neighbourhood_depth : int, optional
-        Calculate attention only between nodes up to this many edges apart.
-        Defaults to 1.
-    strict_neighbourhoods : bool, optional
-        If `True`, only allow a node to pay attention to other nodes connected by
-        a path of length *exactly* `neighbourhood_depth`; if `False` allow
-        connections of length *up to* `neighbourhood_depth`. In particular, when
-        `neighbourhood_depth=1` this controls whether nodes can pay attention to
-        themselves or not. Defaults to `False`.
-    sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth &gt; 1`. Defaults to `True`.
+    **kwargs
+        Keyword arguments to be passed to the attention heads themselves.
     &#34;&#34;&#34;
     def __init__(self,
+                 attention_type: Type[AbstractAttentionHead],
                  in_features: int,
                  out_features: int,
-                 leaky_relu_slope: float = 0.2,
                  num_heads: int = 1,
                  is_final_layer: bool = False,
-                 attention_dropout: float = 0,
-                 neighbourhood_depth: int = 1,
-                 strict_neighbourhoods: bool = False,
-                 sparse: bool = True):
+                 **kwargs):
         super().__init__()
         self.is_final_layer = is_final_layer
-        self.heads = torch.nn.ModuleList([AttentionHead(in_features,
-                                                        out_features,
-                                                        leaky_relu_slope,
-                                                        attention_dropout,
-                                                        neighbourhood_depth,
-                                                        strict_neighbourhoods,
-                                                        sparse=sparse)
+        self.in_features = in_features
+        self.heads = torch.nn.ModuleList([attention_type(in_features,
+                                                         out_features,
+                                                         **kwargs)
                                           for _ in range(num_heads)])
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
@@ -595,20 +1020,24 @@ themselves or not. Defaults to <code>False</code>.</dd>
 <ul class="hlist">
 <li>torch.nn.modules.module.Module</li>
 </ul>
+<h3>Subclasses</h3>
+<ul class="hlist">
+<li><a title="oxgat.components.MultiHeadAttentionLayerWithDegrees" href="#oxgat.components.MultiHeadAttentionLayerWithDegrees">MultiHeadAttentionLayerWithDegrees</a></li>
+</ul>
 <h3>Class variables</h3>
 <dl>
-<dt id="oxgat.components.GATLayer.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dt id="oxgat.components.MultiHeadAttentionLayer.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
-<dt id="oxgat.components.GATLayer.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dt id="oxgat.components.MultiHeadAttentionLayer.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
 <dd>
 <div class="desc"></div>
 </dd>
 </dl>
 <h3>Methods</h3>
 <dl>
-<dt id="oxgat.components.GATLayer.forward"><code class="name flex">
+<dt id="oxgat.components.MultiHeadAttentionLayer.forward"><code class="name flex">
 <span>def <span class="ident">forward</span></span>(<span>self, x: torch.Tensor, edge_index: torch.Tensor) ‑> Callable[..., Any]</span>
 </code></dt>
 <dd>
@@ -655,6 +1084,63 @@ adjacency matrix).</dd>
 </dd>
 </dl>
 </dd>
+<dt id="oxgat.components.MultiHeadAttentionLayerWithDegrees"><code class="flex name class">
+<span>class <span class="ident">MultiHeadAttentionLayerWithDegrees</span></span>
+<span>(</span><span>*args, **kwargs)</span>
+</code></dt>
+<dd>
+<div class="desc"><p>Represents a single multi-head attention layer which encodes each
+node's degree into its feature vector before applying attention heads.</p>
+<p>Inherits from <code><a title="oxgat.components.MultiHeadAttentionLayer" href="#oxgat.components.MultiHeadAttentionLayer">MultiHeadAttentionLayer</a></code>.</p>
+<p>Initializes internal Module state, shared by both nn.Module and ScriptModule.</p></div>
+<details class="source">
+<summary>
+<span>Expand source code</span>
+</summary>
+<pre><code class="python">class MultiHeadAttentionLayerWithDegrees(MultiHeadAttentionLayer): # TODO: generalise to weighted degree
+    &#34;&#34;&#34;Represents a single multi-head attention layer which encodes each
+    node&#39;s degree into its feature vector before applying attention heads.
+
+    Inherits from `MultiHeadAttentionLayer`.
+    &#34;&#34;&#34;
+    def __init__(self, *args, **kwargs):
+        max_degree = kwargs.pop(&#34;max_degree&#34;) # Required
+        self.add_degrees = OneHotDegree(max_degree)
+        if &#34;in_features&#34; in kwargs:
+            kwargs[&#34;in_features&#34;] += max_degree+1
+        else:
+            args[1] += max_degree+1
+        super().__init__(*args, **kwargs)
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor):
+        x = self.add_degrees(Data(x, edge_index)).x
+        return super().forward(x, edge_index)</code></pre>
+</details>
+<h3>Ancestors</h3>
+<ul class="hlist">
+<li><a title="oxgat.components.MultiHeadAttentionLayer" href="#oxgat.components.MultiHeadAttentionLayer">MultiHeadAttentionLayer</a></li>
+<li>torch.nn.modules.module.Module</li>
+</ul>
+<h3>Class variables</h3>
+<dl>
+<dt id="oxgat.components.MultiHeadAttentionLayerWithDegrees.dump_patches"><code class="name">var <span class="ident">dump_patches</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+<dt id="oxgat.components.MultiHeadAttentionLayerWithDegrees.training"><code class="name">var <span class="ident">training</span> : bool</code></dt>
+<dd>
+<div class="desc"></div>
+</dd>
+</dl>
+<h3>Inherited members</h3>
+<ul class="hlist">
+<li><code><b><a title="oxgat.components.MultiHeadAttentionLayer" href="#oxgat.components.MultiHeadAttentionLayer">MultiHeadAttentionLayer</a></b></code>:
+<ul class="hlist">
+<li><code><a title="oxgat.components.MultiHeadAttentionLayer.forward" href="#oxgat.components.MultiHeadAttentionLayer.forward">forward</a></code></li>
+</ul>
+</li>
+</ul>
+</dd>
 </dl>
 </section>
 </article>
@@ -672,20 +1158,43 @@ adjacency matrix).</dd>
 <li><h3><a href="#header-classes">Classes</a></h3>
 <ul>
 <li>
-<h4><code><a title="oxgat.components.AttentionHead" href="#oxgat.components.AttentionHead">AttentionHead</a></code></h4>
+<h4><code><a title="oxgat.components.AbstractAttentionHead" href="#oxgat.components.AbstractAttentionHead">AbstractAttentionHead</a></code></h4>
 <ul class="">
-<li><code><a title="oxgat.components.AttentionHead.dump_patches" href="#oxgat.components.AttentionHead.dump_patches">dump_patches</a></code></li>
-<li><code><a title="oxgat.components.AttentionHead.forward" href="#oxgat.components.AttentionHead.forward">forward</a></code></li>
-<li><code><a title="oxgat.components.AttentionHead.reset_parameters" href="#oxgat.components.AttentionHead.reset_parameters">reset_parameters</a></code></li>
-<li><code><a title="oxgat.components.AttentionHead.training" href="#oxgat.components.AttentionHead.training">training</a></code></li>
+<li><code><a title="oxgat.components.AbstractAttentionHead.dump_patches" href="#oxgat.components.AbstractAttentionHead.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.components.AbstractAttentionHead.forward" href="#oxgat.components.AbstractAttentionHead.forward">forward</a></code></li>
+<li><code><a title="oxgat.components.AbstractAttentionHead.reset_parameters" href="#oxgat.components.AbstractAttentionHead.reset_parameters">reset_parameters</a></code></li>
+<li><code><a title="oxgat.components.AbstractAttentionHead.training" href="#oxgat.components.AbstractAttentionHead.training">training</a></code></li>
 </ul>
 </li>
 <li>
-<h4><code><a title="oxgat.components.GATLayer" href="#oxgat.components.GATLayer">GATLayer</a></code></h4>
+<h4><code><a title="oxgat.components.GATAttentionHead" href="#oxgat.components.GATAttentionHead">GATAttentionHead</a></code></h4>
 <ul class="">
-<li><code><a title="oxgat.components.GATLayer.dump_patches" href="#oxgat.components.GATLayer.dump_patches">dump_patches</a></code></li>
-<li><code><a title="oxgat.components.GATLayer.forward" href="#oxgat.components.GATLayer.forward">forward</a></code></li>
-<li><code><a title="oxgat.components.GATLayer.training" href="#oxgat.components.GATLayer.training">training</a></code></li>
+<li><code><a title="oxgat.components.GATAttentionHead.dump_patches" href="#oxgat.components.GATAttentionHead.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.components.GATAttentionHead.forward" href="#oxgat.components.GATAttentionHead.forward">forward</a></code></li>
+<li><code><a title="oxgat.components.GATAttentionHead.training" href="#oxgat.components.GATAttentionHead.training">training</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.components.GATv2AttentionHead" href="#oxgat.components.GATv2AttentionHead">GATv2AttentionHead</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.components.GATv2AttentionHead.dump_patches" href="#oxgat.components.GATv2AttentionHead.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.components.GATv2AttentionHead.forward" href="#oxgat.components.GATv2AttentionHead.forward">forward</a></code></li>
+<li><code><a title="oxgat.components.GATv2AttentionHead.training" href="#oxgat.components.GATv2AttentionHead.training">training</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.components.MultiHeadAttentionLayer" href="#oxgat.components.MultiHeadAttentionLayer">MultiHeadAttentionLayer</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.components.MultiHeadAttentionLayer.dump_patches" href="#oxgat.components.MultiHeadAttentionLayer.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.components.MultiHeadAttentionLayer.forward" href="#oxgat.components.MultiHeadAttentionLayer.forward">forward</a></code></li>
+<li><code><a title="oxgat.components.MultiHeadAttentionLayer.training" href="#oxgat.components.MultiHeadAttentionLayer.training">training</a></code></li>
+</ul>
+</li>
+<li>
+<h4><code><a title="oxgat.components.MultiHeadAttentionLayerWithDegrees" href="#oxgat.components.MultiHeadAttentionLayerWithDegrees">MultiHeadAttentionLayerWithDegrees</a></code></h4>
+<ul class="">
+<li><code><a title="oxgat.components.MultiHeadAttentionLayerWithDegrees.dump_patches" href="#oxgat.components.MultiHeadAttentionLayerWithDegrees.dump_patches">dump_patches</a></code></li>
+<li><code><a title="oxgat.components.MultiHeadAttentionLayerWithDegrees.training" href="#oxgat.components.MultiHeadAttentionLayerWithDegrees.training">training</a></code></li>
 </ul>
 </li>
 </ul>

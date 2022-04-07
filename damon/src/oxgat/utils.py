@@ -27,7 +27,7 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
 
 def sparse_power(edge_index: torch.Tensor, size: int, power: int) -> torch.Tensor:
     """Calculates the power of a sparse representation of an adjacency matrix."""
-    edge_values = torch.ones(edge_index.size(1))
+    edge_values = torch.ones(edge_index.size(1)).type_as(edge_index)
     output_index, output_values = edge_index.clone(), edge_values.clone()
     for _ in range(power):
         output_index, output_values = spspmm(output_index, output_values,
