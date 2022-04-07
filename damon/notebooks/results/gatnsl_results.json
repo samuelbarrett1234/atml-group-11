@@ -1,0 +1,92 @@
+{
+    "cora": {
+        "end_train_loss": 0.754074215888977,
+        "end_val_loss": 0.8021901249885559,
+        "end_val_acc": 0.7879999876022339,
+        "epochs_trained": 824,
+        "restored_val_loss": 0.7929763793945312,
+        "restored_val_acc": 0.7879999876022339,
+        "restored_epoch_number": 724,
+        "test_acc": 0.8140000104904175
+    },
+    "citeseer": {
+        "end_train_loss": 0.8512543439865112,
+        "end_val_loss": 1.1137789487838745,
+        "end_val_acc": 0.6740000247955322,
+        "epochs_trained": 795,
+        "restored_val_loss": 1.1036399602890015,
+        "restored_val_acc": 0.6840000152587891,
+        "restored_epoch_number": 695,
+        "test_acc": 0.6790000200271606
+    },
+    "pubmed": {
+        "end_train_loss": 0.4664739668369293,
+        "end_val_loss": 0.6035494804382324,
+        "end_val_acc": 0.7639999985694885,
+        "epochs_trained": 500,
+        "restored_val_loss": 0.5869733691215515,
+        "restored_val_acc": 0.7699999809265137,
+        "restored_epoch_number": 400,
+        "test_acc": 0.7730000019073486
+    },
+    "corafull": {
+        "end_train_loss": 3.8126864433288574,
+        "end_val_loss": 3.8650543689727783,
+        "end_val_acc": 0.2540000081062317,
+        "epochs_trained": 795,
+        "restored_val_loss": 3.8559188842773438,
+        "restored_val_acc": 0.20600000023841858,
+        "restored_epoch_number": 695,
+        "test_acc": 0.20600000023841858
+    },
+    "photo": {
+        "end_train_loss": 0.7940670847892761,
+        "end_val_loss": 0.8515713214874268,
+        "end_val_acc": 0.8500000238418579,
+        "epochs_trained": 1092,
+        "restored_val_loss": 0.8406029939651489,
+        "restored_val_acc": 0.8500000238418579,
+        "restored_epoch_number": 992,
+        "test_acc": 0.8500000238418579
+    },
+    "computers": {
+        "end_train_loss": 1.084945559501648,
+        "end_val_loss": 1.252418875694275,
+        "end_val_acc": 0.7360000014305115,
+        "epochs_trained": 825,
+        "restored_val_loss": 1.2351772785186768,
+        "restored_val_acc": 0.7319999933242798,
+        "restored_epoch_number": 717,
+        "test_acc": 0.7319999933242798
+    },
+    "compsci": {
+        "end_train_loss": 1.0111576318740845,
+        "end_val_loss": 0.7828009724617004,
+        "end_val_acc": 0.8960000276565552,
+        "epochs_trained": 740,
+        "restored_val_loss": 0.7804507613182068,
+        "restored_val_acc": 0.8880000114440918,
+        "restored_epoch_number": 640,
+        "test_acc": 0.8880000114440918
+    },
+    "physics": {
+        "end_train_loss": 0.23194648325443268,
+        "end_val_loss": 0.26844847202301025,
+        "end_val_acc": 0.9139999747276306,
+        "epochs_trained": 622,
+        "restored_val_loss": 0.26290878653526306,
+        "restored_val_acc": 0.9160000085830688,
+        "restored_epoch_number": 522,
+        "test_acc": 0.9160000085830688
+    },
+    "molhiv": {
+        "end_train_loss": 0.030698642134666443,
+        "end_val_acc": 0.6149277998236331,
+        "end_val_loss": 0.10168494284152985,
+        "epochs_trained": 13,
+        "restored_epoch_number": 1,
+        "restored_val_acc": 0.6287692288849696,
+        "restored_val_loss": 0.09918031096458435,
+        "test_acc": 0.6404159987639777
+    }
+}

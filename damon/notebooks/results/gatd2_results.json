@@ -1,0 +1,22 @@
+{
+    "cora": {
+        "end_train_loss": 0.4520701467990875,
+        "end_val_loss": 0.7681151628494263,
+        "end_val_acc": 0.7680000066757202,
+        "epochs_trained": 514,
+        "restored_val_loss": 0.7568444013595581,
+        "restored_val_acc": 0.7760000228881836,
+        "restored_epoch_number": 410,
+        "test_acc": 0.7929999828338623
+    },
+    "citeseer": {
+        "end_train_loss": 0.5315809845924377,
+        "end_val_loss": 0.9431766867637634,
+        "end_val_acc": 0.6779999732971191,
+        "epochs_trained": 693,
+        "restored_val_loss": 0.9382027387619019,
+        "restored_val_acc": 0.6919999718666077,
+        "restored_epoch_number": 593,
+        "test_acc": 0.7099999785423279
+    }
+}
