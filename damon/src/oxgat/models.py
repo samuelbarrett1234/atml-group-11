@@ -461,9 +461,9 @@ class CustomGraphClassifier(AbstractModel):
             self,
             in_features: int,
             num_classes: int,
-            num_attention_layers: int = 4,
-            heads_per_layer: Union[int, List[int]] = 2,
-            hidden_feature_dims: Union[int, List[int]] = 16,
+            num_attention_layers: int = 2,
+            heads_per_layer: Union[int, List[int]] = [8,1],
+            hidden_feature_dims: Union[int, List[int]] = 8,
             layer_type: Type[torch.nn.Module] = components.MultiHeadAttentionLayer,
             attention_type: Type[components.AbstractAttentionHead] = components.GATAttentionHead,
             num_mlp_hidden_layers: int = 1,
@@ -474,11 +474,12 @@ class CustomGraphClassifier(AbstractModel):
             restore_best: str = "loss",
             batch_size: int = 128,
             pooling: str = "mean",
-            loader_num_workers: int = 4,
+            loader_num_workers: int = 0,
             cast_to_float = False,
-            early_stopping_patience: int = 100,
+            early_stopping_patience: int = 5,
             metric: str = "accuracy",
             add_pos: bool = False,
+            max_epochs: int = 2000,
             **kwargs):
         super().__init__()
         if isinstance(heads_per_layer, int):
@@ -539,6 +540,9 @@ class CustomGraphClassifier(AbstractModel):
         self.early_stopping_patience = early_stopping_patience
         self.use_roc = (metric == "roc_auc_score")
         self.add_pos = add_pos
+        self.max_epochs = max_epochs
+        
+        self.final_metrics = {}
         
     def forward(self, data):
         x, edge_index = data.x, data.edge_index
@@ -602,8 +606,15 @@ class CustomGraphClassifier(AbstractModel):
                          train_dataloaders=train_loader,
                          val_dataloaders=val_loader)
         # Restore best weights and validate
+        self.final_metrics["end_train_loss"] = float(self.trainer.callback_metrics["train_loss"])
+        self.final_metrics["end_val_loss"] = float(self.trainer.callback_metrics["val_loss"])
+        self.final_metrics["end_val_acc"] = float(self.trainer.callback_metrics["val_acc"])
+        self.final_metrics["epochs_trained"] = self.current_epoch+1
         self.trainer = pl.Trainer(**self.trainer_args)
         self.trainer.validate(self, val_loader, ckpt_path="best")
+        self.final_metrics["restored_val_loss"] = float(self.trainer.callback_metrics["val_loss"])
+        self.final_metrics["restored_val_acc"] = float(self.trainer.callback_metrics["val_acc"])
+        self.final_metrics["restored_epoch_number"] = self.current_epoch
 
     def standard_test(self, dataset):
         """Method to test this model after having run `self.standard_train()`.
@@ -611,6 +622,7 @@ class CustomGraphClassifier(AbstractModel):
         assert self.trainer is not None, "Must run `self.standard_train()` first."
         dataloader = torch_geometric.loader.DataLoader(dataset, batch_size=dataset.len())
         self.trainer.test(self, dataloader)
+        self.final_metrics["test_acc"] = float(self.trainer.callback_metrics["test_acc"])
 
     # Initialize the trainer for use in self.train()
     def _init_trainer(self, use_gpu):
@@ -623,7 +635,7 @@ class CustomGraphClassifier(AbstractModel):
             patience=self.early_stopping_patience,
             verbose=False
         )
-        trainer_args = {"max_epochs": 100000,
+        trainer_args = {"max_epochs": self.max_epochs,
                         "log_every_n_steps": 1,
                         "callbacks": [early_stopping,
                                       self.checkpointer,

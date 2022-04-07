@@ -11,6 +11,7 @@ import torch
 import torch.nn.functional as F
 import torch_geometric.data
 import torch_geometric.utils
+from torch_sparse import spspmm
 
 
 def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
@@ -22,6 +23,17 @@ def sparse_dropout(x: torch.Tensor, p: float, training: bool = True):
     return torch.sparse_coo_tensor(values=new_values, 
                                    indices=x.indices(),
                                    size=x.size())
+
+
+def sparse_power(edge_index: torch.Tensor, size: int, power: int) -> torch.Tensor:
+    """Calculates the power of a sparse representation of an adjacency matrix."""
+    edge_values = torch.ones(edge_index.size(1))
+    output_index, output_values = edge_index.clone(), edge_values.clone()
+    for _ in range(power):
+        output_index, output_values = spspmm(output_index, output_values,
+                                             edge_index, edge_values, size,
+                                             size, size, True)
+    return output_index
 
 
 def get_max_degree(dataset: torch_geometric.data.Dataset):

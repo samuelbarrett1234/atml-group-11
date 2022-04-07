@@ -9,6 +9,7 @@ from torch_geometric.utils import to_dense_adj
 from torch_geometric.transforms import OneHotDegree
 from torch_geometric.data import Data
 from typing import Type
+from torch_sparse import spspmm
 
 from . import utils
 
@@ -51,8 +52,7 @@ class GATAttentionHead(AbstractAttentionHead):
         `neighbourhood_depth=1` this controls whether nodes can pay attention to
         themselves or not. Defaults to `False`.
     sparse : bool, optional
-        Whether to use sparse matrix operations. Must be `False` if
-        `neighbourhood_depth > 1`. Defaults to `True`.
+        Whether to use sparse matrix operations. Defaults to `True`.
     """
     def __init__(self,
                  in_features: int,
@@ -63,8 +63,6 @@ class GATAttentionHead(AbstractAttentionHead):
                  strict_neighbourhoods: bool = False,
                  sparse: bool = True):
         torch.nn.Module.__init__(self)
-        assert neighbourhood_depth == 1 or not sparse, \
-            "Sparse computation only supported for `neighbourhood_depth=1`."
 
         self.W = torch.nn.Linear(in_features, out_features, bias=False)
         self.a1 = torch.nn.Linear(out_features, 1, bias=False)
@@ -139,6 +137,10 @@ class GATAttentionHead(AbstractAttentionHead):
         if not self.strict_neighbourhoods: # Add self-loops
             self_loops = torch.arange(n, dtype=torch.long).type_as(edge_index).expand(2,n)
             edge_index = torch.cat([edge_index, self_loops], dim=1)
+        if self.neighbourhood_depth > 1:
+            # Calculate higher-order adjacency matrix
+            edge_index = utils.sparse_power(edge_index, n, self.neighbourhood_depth)
+        
         attention_vals = self.leaky_relu(self.a1(x[edge_index[0,:],:]) + \
                                          self.a2(x[edge_index[1,:],:])).flatten()
         e = torch.sparse_coo_tensor(edge_index, attention_vals, size=(n,n))
