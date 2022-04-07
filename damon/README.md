@@ -1,51 +1,42 @@
-# Exploring Graph Attention Networks
+# Some Experiments with Graph Attention Networks
 
-**Kaloyan Aleksiev, Samuel Barrett, Damon Falck, Filip Mohov**
+**Implementations and experiments corresponding to Sections 2.2 and 5.2 in the accompanying report**
 
-*Original implementation in this directory by Damon Falck*
+*Contents of this directory by Damon Falck*
 
-This directory contains implementations of the experimental results in [Graph Attention Networks (2018)](https://arxiv.org/abs/1710.10903), as well as hopefully some extensions to be added soon.
+---
 
-## Status summary
+This directory contains implementations of various models based on GAT (from [Graph Attention Networks (2018)](https://arxiv.org/abs/1710.10903)) and GATv2 (from [How Attentive are Graph Attention Networks? (2022)](https://arxiv.org/abs/2105.14491)) and two sets of experiments involving them:
 
-Currently I have implemented the inductive and transductive GAT models defined in the original paper, with training methods exactly mimicing those in the paper. **I have also added sparse tensor calculations and set this as the default mode;** training fully on Cora with GPU now takes at most a couple of minutes.
+1. A reproduction of the results from the GAT paper, using exactly the same models and training procedures they used (this corresponds to Section 2.2 in the accompanying report);
+2. A broader study comparing various variants of the GAT and GATv2 attention mechanisms on a wider array of datasets (corresponding to Section 5.2 in the report).
 
-My results are as follows:
+The results from these experiments can be found in the `notebooks` directory.
 
-- **Cora (*transductive*):** 82.7% accuracy in ~700 epochs;
-- **CiteSeer (*transductive*):** 70.0% accuracy in ~500 epochs;
-- **PubMed (*transductive*):** 78.7% accuracy in ~300 epochs;
-- **PPI (*inductive*):** 0.96 micro-F1 score in ~600 epochs (need to re-do).
-
-*Note that my training uses the early stopping strategy from the paper, with a patience of 100 epochs.*
-
-## Directory structure
+## Structure
 
 The models and training are implemented in a Python package contained in `src/oxgat`. Within this:
 
-- the `components` module defines individual GAT layers and attention heads;
+- the `components` module defines individual GAT/GATv2 layers and attention heads;
 - the `models` module defines trainable models according to the original paper;
 - the `utils` module defines additional utilities.
 
-Example usage is shown in the `notebooks/examples.ipynb`.
+The `notebooks` directory contains Jupyter notebooks running the two empirical studies mentioned above, with JSON results for the second study in `notebooks/results`.
+
+HTML package documentation is available in the `docs` directory, and the reader is encouraged to look through this!
 
 ## Package installation
 
-Notebooks in this directory depend on the Python package `oxgat` mentioned above. This should be installed using
+Notebooks here depend on the Python package `oxgat` mentioned above. This should be installed using
 ```
-pip install -e damon/src
+pip install -e src
 ```
-in the repository root; all dependencies will be automatically added.
+from this directory; all dependencies will be automatically added.
 
-## Package documentation
+## Implementation comments
 
-Formal documentation is compiled periodically and available in the `docs` directory.
+My implementations are based on PyTorch Lightning, appropriately abstracting away details of the training process; a class heirarchy is defined in `models` which provides automated training interfaces for each model. In all cases I have provided *sparse tensor calculations* as built-in functionality, which substantially speeds up training.
 
-## Further comments
+I highly recommend running any of the experimental notebooks in a GPU-enabled environment; I have provided Colab links in the header of each notebook.
 
-My implementations are based on PyTorch Lightning, appropriately abstracting away details of the training process; a class heirarchy is defined in `models` which provides automated training interfaces for each model.
-
-## To do
-
-- Implement GATv2
-- Extend in various other directions
+**Please see the accompanying report for a full discussion of the results from my experiments!**
