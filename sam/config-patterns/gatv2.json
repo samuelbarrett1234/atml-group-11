@@ -1,0 +1,19 @@
+{
+    "tag" : "gatv2",
+    "type" : "GATv2",
+
+    "train_cfg" :
+    {
+        "learning_rate" : [0.0005, 0.001, 0.005, 0.01],
+        "weight_decay" : [3.0e-3, 3.0e-4, 0.0],
+        "max_epoch" : 100
+    },
+
+    "model_kwargs" :
+    {
+        "internal_dim" : [64, 128, 256],
+        "num_layers" : [2, 3, 6],
+        "num_heads" : 8,
+        "dropout" : [0.4, 0.6, 0.8]
+    }
+}

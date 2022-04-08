@@ -1,0 +1,27 @@
+{
+    "tag" : "vanilla-transformer",
+    "type" : "vanilla",
+
+    "train_cfg" :
+    {
+        "learning_rate" : 0.005,
+        "weight_decay" : 0.0005,
+        "max_epoch" : 100,
+
+        "step_lr" :
+        {
+            "step" : 50,
+            "gamma" : 0.5
+        }
+    },
+
+    "model_kwargs" :
+    {
+        "internal_dim" : 128,
+        "num_layers" : 1,
+        "num_heads" : 8,
+        "skip_conn" : true,
+        "identity_bias" : 0.0,
+        "pos_emb_dim" : 40
+    }
+}
